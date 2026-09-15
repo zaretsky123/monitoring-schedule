@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import * as XLSX from "xlsx";
 import {
   CalendarDays,
   CheckCircle2,
@@ -134,6 +133,8 @@ const NAV_ITEMS = [
 const DAY_WIDTH = 154;
 const NAME_WIDTH = 196;
 const STORAGE_KEY = "monitoring-schedule:october-2026:v1";
+const EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const WEEKDAYS_RU = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 
 type PersistedSchedule = {
   version: 1;
@@ -245,6 +246,7 @@ export default function Home() {
   const [customStart, setCustomStart] = useState("2026-10-03T08:00");
   const [customEnd, setCustomEnd] = useState("2026-10-03T20:00");
   const [storageReady, setStorageReady] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const days = useMemo(() => Array.from({ length: 31 }, (_, index) => index + 1), []);
   const displaySchedule = previewSchedule ?? schedule;
   const currentValidation = useMemo(
@@ -470,49 +472,136 @@ export default function Home() {
     closeWorkflow();
   }
 
-  function exportExcel() {
-    const rows: (string | number)[][] = [
-      ["График круглосуточного мониторинга — октябрь 2026"],
-      ["Сотрудник"],
-      [""],
-    ];
-    for (const day of days) {
-      rows[1].push(day, "", "");
-      rows[2].push("00–08", "08–20", "20–24");
-    }
-    for (const person of PEOPLE) {
-      const employeeId = employeeIdByName[person];
-      const row: (string | number)[] = [person];
+  async function exportExcel() {
+    setExporting(true);
+    try {
+      const [{ default: ExcelJS }, templateResponse] = await Promise.all([
+        import("exceljs"),
+        fetch("./schedule-template.xlsx"),
+      ]);
+      if (!templateResponse.ok) throw new Error("Не удалось загрузить шаблон Excel");
+
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await templateResponse.arrayBuffer());
+      const sheet = workbook.getWorksheet("почасовой график") ?? workbook.worksheets[0];
+      if (!sheet) throw new Error("В шаблоне отсутствует лист графика");
+
+      const cloneStyle = <T,>(style: T): T => JSON.parse(JSON.stringify(style)) as T;
+      const emptyStyles = [
+        cloneStyle(sheet.getCell("B9").style),
+        cloneStyle(sheet.getCell("C8").style),
+        cloneStyle(sheet.getCell("D9").style),
+      ];
+      const dayShiftStyle = cloneStyle(sheet.getCell("C9").style);
+      const nightShiftStyle = cloneStyle(sheet.getCell("B8").style);
+      const weekdayFill = cloneStyle(sheet.getCell("B6").fill);
+      const weekendFill = cloneStyle(sheet.getCell("H6").fill);
+
+      sheet.getCell("R3").value = "График мониторинга — Октябрь 2026";
       for (const day of days) {
-        const left = displaySchedule.find((shift) => shift.id === shiftIdFor(day - 1, "night"));
-        const center = displaySchedule.find((shift) => shift.id === shiftIdFor(day, "day"));
-        const right = displaySchedule.find((shift) => shift.id === shiftIdFor(day, "night"));
-        row.push(left?.employeeId === employeeId ? "Н" : "", center?.employeeId === employeeId ? "Д" : "", right?.employeeId === employeeId ? "Н" : "");
+        const firstColumn = 2 + (day - 1) * 3;
+        const calendarDate = new Date(Date.UTC(2026, 9, day));
+        const weekend = calendarDate.getUTCDay() === 0 || calendarDate.getUTCDay() === 6;
+        sheet.getCell(6, firstColumn).value = day;
+        sheet.getCell(7, firstColumn).value = WEEKDAYS_RU[calendarDate.getUTCDay()];
+        for (const row of [6, 7]) {
+          const headerCell = sheet.getCell(row, firstColumn);
+          const headerStyle = cloneStyle(headerCell.style);
+          headerStyle.fill = cloneStyle(weekend ? weekendFill : weekdayFill);
+          headerCell.style = headerStyle;
+        }
       }
-      rows.push(row);
+
+      for (let row = 8; row <= 11; row += 1) {
+        for (const day of days) {
+          const firstColumn = 2 + (day - 1) * 3;
+          for (let segment = 0; segment < 3; segment += 1) {
+            const cell = sheet.getCell(row, firstColumn + segment);
+            cell.value = null;
+            cell.style = cloneStyle(emptyStyles[segment]);
+          }
+        }
+      }
+
+      const scheduleById = new Map(displaySchedule.map((shift) => [shift.id, shift]));
+      const rowByEmployee = new Map(PEOPLE.map((person, index) => [employeeIdByName[person], 8 + index]));
+      const writeShiftMarker = (shift: Shift | undefined, column: number, style: typeof dayShiftStyle) => {
+        if (!shift) return;
+        const row = rowByEmployee.get(shift.employeeId);
+        if (!row) return;
+        const cell = sheet.getCell(row, column);
+        cell.value = shift.type === "D" ? "Д3" : "Н2";
+        cell.style = cloneStyle(style);
+        if (shift.employeeId !== shift.plannedEmployeeId) {
+          cell.font = { ...cell.font, bold: true, color: { argb: "FFC00000" } };
+        }
+      };
+
+      for (const day of days) {
+        const firstColumn = 2 + (day - 1) * 3;
+        writeShiftMarker(scheduleById.get(shiftIdFor(day - 1, "night")), firstColumn, nightShiftStyle);
+        writeShiftMarker(scheduleById.get(shiftIdFor(day, "day")), firstColumn + 1, dayShiftStyle);
+        writeShiftMarker(scheduleById.get(shiftIdFor(day, "night")), firstColumn + 2, nightShiftStyle);
+      }
+
+      sheet.getCell("C13").value = "Д3";
+      sheet.getCell("D13").value = "Н2";
+      sheet.getCell("E13").value = "пар выходных";
+      sheet.getCell("I13").value = "рабочих ч.";
+      const period = octoberPeriod();
+      for (const [index, person] of PEOPLE.entries()) {
+        const employeeId = employeeIdByName[person];
+        const row = 14 + index;
+        const stats = personStats(person, displaySchedule);
+        let nightHalves = 0;
+        let workedHours = 0;
+        for (const shift of displaySchedule) {
+          if (shift.employeeId !== employeeId) continue;
+          if (shift.type === "N") {
+            for (const day of days) {
+              if (scheduleById.get(shiftIdFor(day - 1, "night"))?.id === shift.id) nightHalves += 1;
+              if (scheduleById.get(shiftIdFor(day, "night"))?.id === shift.id) nightHalves += 1;
+            }
+          }
+          const overlapStart = Math.max(shift.start.getTime(), period.start.getTime());
+          const overlapEnd = Math.min(shift.end.getTime(), period.end.getTime());
+          if (overlapEnd > overlapStart) workedHours += (overlapEnd - overlapStart) / (60 * 60 * 1000);
+        }
+        sheet.getCell(row, 1).value = person;
+        sheet.getCell(row, 3).value = stats.dayCount;
+        sheet.getCell(row, 4).value = nightHalves / 2;
+        sheet.getCell(row, 6).value = stats.offPairs;
+        sheet.getCell(row, 9).value = workedHours;
+      }
+
+      sheet.getCell("C23").value = [
+        "Каждая смена длится ровно 12 часов; все дневные и ночные смены должны быть закрыты.",
+        "Между сменами одного сотрудника должно быть не менее 12 часов отдыха.",
+        "В одном рабочем блоке допускается не более четырех смен.",
+        "После блока из трех или четырех смен обязательны два полных календарных выходных.",
+        "В каждом месяце у сотрудника должно быть минимум две пары полных календарных выходных.",
+        "В каждой календарной неделе должно быть не менее 42 часов отдыха суммарно.",
+      ].join("\n");
+      sheet.getCell("C23").alignment = { ...sheet.getCell("C23").alignment, wrapText: true, vertical: "top" };
+      sheet.getRow(23).height = 90;
+      workbook.creator = "Мониторинг";
+      workbook.modified = new Date();
+      workbook.calcProperties.fullCalcOnLoad = true;
+
+      const output = await workbook.xlsx.writeBuffer();
+      const url = URL.createObjectURL(new Blob([new Uint8Array(output)], { type: EXCEL_MIME }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "График_мониторинга_октябрь_2026.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Не удалось сформировать Excel");
+    } finally {
+      setExporting(false);
     }
-
-    const scheduleSheet = XLSX.utils.aoa_to_sheet(rows);
-    scheduleSheet["!merges"] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 93 } },
-      ...days.map((_, index) => ({ s: { r: 1, c: 1 + index * 3 }, e: { r: 1, c: 3 + index * 3 } })),
-    ];
-    scheduleSheet["!cols"] = [{ wch: 20 }, ...days.flatMap(() => [{ wch: 7 }, { wch: 12 }, { wch: 7 }])];
-
-    const changes = displaySchedule
-      .filter((shift) => shift.start >= octoberPeriod().start && shift.start < octoberPeriod().end && shift.employeeId !== shift.plannedEmployeeId)
-      .map((shift) => [changeDateLabel(shift.id), shift.type === "D" ? "Дневная" : "Ночная", employeeNameById[shift.plannedEmployeeId], employeeNameById[shift.employeeId]]);
-    const changesSheet = XLSX.utils.aoa_to_sheet([
-      ["Изменения относительно первоначального графика"],
-      ["Смена", "Тип", "По плану", "Текущий сотрудник"],
-      ...(changes.length ? changes : [["Изменений нет", "", "", ""]]),
-    ]);
-    changesSheet["!cols"] = [{ wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 20 }];
-
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, scheduleSheet, "График");
-    XLSX.utils.book_append_sheet(workbook, changesSheet, "Изменения");
-    XLSX.writeFile(workbook, "График_мониторинга_октябрь_2026.xlsx", { compression: true });
   }
 
   const gridStyle = { gridTemplateColumns: `${NAME_WIDTH}px repeat(31, ${DAY_WIDTH}px)` };
@@ -544,7 +633,7 @@ export default function Home() {
               <Button variant="outline" size="icon" className="coming-icon-button" aria-disabled="true" aria-label="Предыдущий месяц — будет позже" title="Будет позже"><ChevronLeft /></Button>
               <button type="button" className="month-button month-button-coming" aria-disabled="true" title="Выбор месяца будет позже"><CalendarDays />Октябрь 2026<small>Будет позже</small></button>
               <Button variant="outline" size="icon" className="coming-icon-button" aria-disabled="true" aria-label="Следующий месяц — будет позже" title="Будет позже"><ChevronRight /></Button>
-              <Button className="export-button" onClick={exportExcel}><Download />Скачать Excel</Button>
+              <Button className="export-button" onClick={exportExcel} disabled={exporting}><Download />{exporting ? "Готовим Excel…" : "Скачать Excel"}</Button>
               <button type="button" className="profile-button coming-icon-button" aria-disabled="true" aria-label="Профиль пользователя — будет позже" title="Будет позже">А</button>
             </div>
           </header>
