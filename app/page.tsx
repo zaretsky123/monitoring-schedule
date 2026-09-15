@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -232,6 +233,7 @@ export default function Home() {
   const [selectedOptionKey, setSelectedOptionKey] = useState("");
   const [expandedOptionKey, setExpandedOptionKey] = useState("");
   const [calculationError, setCalculationError] = useState("");
+  const [calculating, setCalculating] = useState(false);
   const [historyCount, setHistoryCount] = useState(0);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [hoveredPerson, setHoveredPerson] = useState<Person | null>(null);
@@ -317,6 +319,7 @@ export default function Home() {
   }
 
   function closeWorkflow() {
+    if (calculating) return;
     setWorkflow(null);
     setOptions([]);
     setSelectedOptionKey("");
@@ -397,7 +400,8 @@ export default function Home() {
     );
   }
 
-  function calculateOptions() {
+  async function calculateOptions() {
+    if (calculating) return;
     const employeeId = selectedShift ? employeeIdByName[selectedShift.person] : selectedEmployee ? employeeIdByName[selectedEmployee] : "";
     let target = selectedShift ? schedule.find((shift) => shift.id === shiftIdFor(selectedShift.startDay, selectedShift.kind)) : undefined;
     let absence: Absence | null = target ? { employeeId: target.employeeId, start: target.start, end: target.end } : null;
@@ -436,27 +440,38 @@ export default function Home() {
     const requiredAssignments = workflow === "replace" && replacement
       ? { [target.id]: employeeIdByName[replacement] }
       : {};
-    const result = solveSchedule({
-      schedule,
-      employees: EMPLOYEES,
-      period: octoberPeriod(),
-      absences: [absence],
-      recalculationStart: target.start,
-      requiredAssignments,
-      maxExtraChanges: 2,
-      maxOptions: 3,
+    setCalculationError("");
+    setCalculating(true);
+
+    // Даём React отрисовать загрузку до запуска синхронного перебора вариантов.
+    await new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
     });
 
-    if (!result.found) {
-      setOptions([]);
-      setCalculationError(result.reason);
-      setPreviewSchedule(null);
-      return;
+    try {
+      const result = solveSchedule({
+        schedule,
+        employees: EMPLOYEES,
+        period: octoberPeriod(),
+        absences: [absence],
+        recalculationStart: target.start,
+        requiredAssignments,
+        maxExtraChanges: 2,
+        maxOptions: 3,
+      });
+
+      if (!result.found) {
+        setOptions([]);
+        setCalculationError(result.reason);
+        setPreviewSchedule(null);
+        return;
+      }
+      setOptions(result.options);
+      setSelectedOptionKey(result.recommendedKey);
+      setPreviewSchedule(result.options[0].schedule);
+    } finally {
+      setCalculating(false);
     }
-    setCalculationError("");
-    setOptions(result.options);
-    setSelectedOptionKey(result.recommendedKey);
-    setPreviewSchedule(result.options[0].schedule);
   }
 
   function chooseOption(option: ScheduleOption) {
@@ -719,12 +734,18 @@ export default function Home() {
         <Sheet open={workflow !== null} onOpenChange={(open) => !open && closeWorkflow()}>
           <SheetContent className="workflow-sheet sm:max-w-[480px]">
             <SheetHeader className="sheet-header-custom">
-              <SheetTitle className="text-xl">{options.length ? "Варианты графика" : workflow === "remove" ? "Убрать сотрудника со смены" : "Заменить сотрудника"}</SheetTitle>
+              <SheetTitle className="text-xl">{calculating ? "Расчёт вариантов" : options.length ? "Варианты графика" : workflow === "remove" ? "Убрать сотрудника со смены" : "Заменить сотрудника"}</SheetTitle>
               <SheetDescription>{selectedShift ? `${selectedShift.person} · ${shiftLabel(selectedShift)}` : `${selectedEmployee ?? "Сотрудник"} · укажите период`}</SheetDescription>
             </SheetHeader>
 
             <div className="sheet-body">
-              {options.length ? (
+              {calculating ? (
+                <div className="calculation-loading" role="status" aria-live="polite">
+                  <span className="calculation-spinner"><Spinner /></span>
+                  <h3>Подбираем лучшие варианты…</h3>
+                  <p>Проверяем покрытие смен, интервалы отдыха, рабочие блоки и обязательные выходные.</p>
+                </div>
+              ) : options.length ? (
                 <div className="options-list">
                   <p className="options-intro">Все варианты закрывают смены и проходят обязательные проверки. Нажмите на вариант, чтобы увидеть его в таблице.</p>
                   {options.map((option, index) => {
@@ -766,7 +787,7 @@ export default function Home() {
             </div>
 
             <SheetFooter className="sheet-footer-custom">
-              {options.length ? <><Button variant="outline" onClick={() => { setOptions([]); setPreviewSchedule(null); }}>Назад</Button><Button className="calculate-button" onClick={applySelectedOption}>Применить вариант</Button></> : <><Button variant="outline" onClick={closeWorkflow}>Отмена</Button>{!calculationError && <Button className="calculate-button" onClick={calculateOptions} disabled={workflow === "replace" && !replacement}>{workflow === "remove" ? "Рассчитать варианты" : "Проверить замену"}</Button>}</>}
+              {calculating ? <><Button variant="outline" disabled>Отмена</Button><Button className="calculate-button" disabled><Spinner />Идёт расчёт…</Button></> : options.length ? <><Button variant="outline" onClick={() => { setOptions([]); setPreviewSchedule(null); }}>Назад</Button><Button className="calculate-button" onClick={applySelectedOption}>Применить вариант</Button></> : <><Button variant="outline" onClick={closeWorkflow}>Отмена</Button>{!calculationError && <Button className="calculate-button" onClick={calculateOptions} disabled={workflow === "replace" && !replacement}>{workflow === "remove" ? "Рассчитать варианты" : "Проверить замену"}</Button>}</>}
             </SheetFooter>
           </SheetContent>
         </Sheet>

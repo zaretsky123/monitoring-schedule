@@ -248,6 +248,11 @@ button { font: inherit; }
 .calculation-error > svg { width: 34px; height: 34px; padding: 8px; border-radius: 10px; color: #b14e57; background: #fff0f1; }
 .calculation-error h3 { margin: 13px 0 5px; font-size: 16px; }
 .calculation-error p { max-width: 310px; margin: 0 0 16px; color: #7e8999; font-size: 12px; line-height: 1.5; }
+.calculation-loading { min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; }
+.calculation-spinner { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 16px; color: #1976d2; background: #eaf4fd; box-shadow: 0 8px 22px rgba(25,118,210,.14); }
+.calculation-spinner svg { width: 27px; height: 27px; }
+.calculation-loading h3 { margin: 16px 0 6px; color: #2f3c50; font-size: 16px; }
+.calculation-loading p { max-width: 330px; margin: 0; color: #7c889a; font-size: 12px; line-height: 1.55; }
 .sheet-footer-custom { flex-direction: row; justify-content: flex-end; padding: 16px 26px 22px; border-top: 1px solid #e6ebf1; }
 .calculate-button { background: #1976d2; }
 
