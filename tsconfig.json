@@ -33,11 +33,18 @@
   },
   "include": [
     "next-env.d.ts",
-    "**/*.ts",
-    "**/*.tsx",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "components/ui/button.tsx",
+    "components/ui/dropdown-menu.tsx",
+    "components/ui/radio-group.tsx",
+    "components/ui/select.tsx",
+    "components/ui/sheet.tsx",
+    "components/ui/tooltip.tsx",
+    "lib/**/*.ts",
+    "next.config.ts",
     ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts",
-    "**/*.mts"
+    ".next/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
