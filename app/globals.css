@@ -106,6 +106,9 @@ button { font: inherit; }
 .month-button-coming svg { color: #8ea1b3; }
 .month-button-coming small { margin-left: 2px; padding: 3px 5px; border-radius: 5px; color: #7f8a99; background: #edf1f5; font-size: 9px; line-height: 1; }
 .coming-icon-button { opacity: .58; cursor: default; }
+.reset-schedule-button { color: #526074; background: #fff; }
+.reset-schedule-button:not(:disabled):hover { color: #a33e47; border-color: #e7c7ca; background: #fff7f7; }
+.reset-schedule-button:disabled { color: #aab2bd; background: #f7f8fa; }
 .export-button { margin-left: 6px; background: #1976d2; box-shadow: 0 7px 16px rgba(25,118,210,.17); }
 .profile-button { width: 36px; height: 36px; margin-left: 4px; border: 0; border-radius: 50%; color: #fff; background: #607d9c; font-weight: 700; cursor: pointer; }
 
@@ -255,6 +258,15 @@ button { font: inherit; }
 .calculation-loading p { max-width: 330px; margin: 0; color: #7c889a; font-size: 12px; line-height: 1.55; }
 .sheet-footer-custom { flex-direction: row; justify-content: flex-end; padding: 16px 26px 22px; border-top: 1px solid #e6ebf1; }
 .calculate-button { background: #1976d2; }
+.reset-dialog-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgba(25,34,48,.42); backdrop-filter: blur(3px); animation: reset-backdrop-in .15s ease-out; }
+.reset-dialog { width: min(430px,100%); padding: 26px; border: 1px solid #e1e6ed; border-radius: 17px; background: #fff; box-shadow: 0 24px 70px rgba(20,31,47,.24); animation: reset-dialog-in .18s ease-out; }
+.reset-dialog-icon { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 13px; color: #b64b54; background: #fff0f1; }
+.reset-dialog-icon svg { width: 21px; }
+.reset-dialog h2 { margin: 16px 0 7px; color: #283548; font-size: 19px; letter-spacing: -.015em; }
+.reset-dialog p { margin: 0; color: #748095; font-size: 13px; line-height: 1.55; }
+.reset-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 23px; }
+@keyframes reset-backdrop-in { from { opacity: 0; } }
+@keyframes reset-dialog-in { from { opacity: 0; transform: translateY(7px) scale(.985); } }
 
 @media (max-width: 1100px) {
   .summary-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -268,6 +280,8 @@ button { font: inherit; }
   .topbar { align-items: flex-start; padding: 13px 15px; }
   .topbar-heading h1 { font-size: 19px; }
   .topbar-actions > button:nth-child(-n+3),.profile-button { display: none; }
+  .reset-schedule-button span { display: none; }
+  .reset-schedule-button { width: 36px; padding-inline: 0; }
   .export-button { margin: 0; }
   .content-area { padding: 14px; }
   .schedule-toolbar { align-items: flex-start; flex-direction: column; }

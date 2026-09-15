@@ -18,9 +18,11 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  RotateCcw,
   Settings2,
   ShieldCheck,
   Sun,
+  TriangleAlert,
   UserRound,
   UserRoundCog,
   Users,
@@ -249,8 +251,13 @@ export default function Home() {
   const [customEnd, setCustomEnd] = useState("2026-10-03T20:00");
   const [storageReady, setStorageReady] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const days = useMemo(() => Array.from({ length: 31 }, (_, index) => index + 1), []);
   const displaySchedule = previewSchedule ?? schedule;
+  const hasAppliedChanges = useMemo(
+    () => schedule.some((shift) => shift.employeeId !== shift.plannedEmployeeId),
+    [schedule],
+  );
   const currentValidation = useMemo(
     () => validateSchedule({ schedule: displaySchedule, employees: EMPLOYEES, period: octoberPeriod() }),
     [displaySchedule],
@@ -300,6 +307,15 @@ export default function Home() {
       // График продолжит работать в текущей вкладке, даже если хранилище браузера недоступно.
     }
   }, [historyCount, schedule, storageReady]);
+
+  useEffect(() => {
+    if (!resetConfirmOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setResetConfirmOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [resetConfirmOpen]);
 
   function openWorkflow(shift: ShiftSelection, nextWorkflow: Exclude<Workflow, null>) {
     setSelectedShift(shift);
@@ -487,6 +503,19 @@ export default function Home() {
     closeWorkflow();
   }
 
+  function resetToOriginalSchedule() {
+    setSchedule(createOctober2026Schedule());
+    setPreviewSchedule(null);
+    setOptions([]);
+    setSelectedOptionKey("");
+    setExpandedOptionKey("");
+    setCalculationError("");
+    setHistoryCount(0);
+    setWorkflow(null);
+    setEmployeeOpen(false);
+    setResetConfirmOpen(false);
+  }
+
   async function exportExcel() {
     setExporting(true);
     try {
@@ -648,6 +677,7 @@ export default function Home() {
               <Button variant="outline" size="icon" className="coming-icon-button" aria-disabled="true" aria-label="Предыдущий месяц — будет позже" title="Будет позже"><ChevronLeft /></Button>
               <button type="button" className="month-button month-button-coming" aria-disabled="true" title="Выбор месяца будет позже"><CalendarDays />Октябрь 2026<small>Будет позже</small></button>
               <Button variant="outline" size="icon" className="coming-icon-button" aria-disabled="true" aria-label="Следующий месяц — будет позже" title="Будет позже"><ChevronRight /></Button>
+              <Button variant="outline" className="reset-schedule-button" onClick={() => setResetConfirmOpen(true)} disabled={!hasAppliedChanges} title={hasAppliedChanges ? "Отменить все применённые перестановки" : "График уже соответствует исходному"}><RotateCcw /><span>Вернуть исходный</span></Button>
               <Button className="export-button" onClick={exportExcel} disabled={exporting}><Download />{exporting ? "Готовим Excel…" : "Скачать Excel"}</Button>
               <button type="button" className="profile-button coming-icon-button" aria-disabled="true" aria-label="Профиль пользователя — будет позже" title="Будет позже">А</button>
             </div>
@@ -791,6 +821,20 @@ export default function Home() {
             </SheetFooter>
           </SheetContent>
         </Sheet>
+
+        {resetConfirmOpen && (
+          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setResetConfirmOpen(false)}>
+            <section className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="reset-dialog-title" aria-describedby="reset-dialog-description">
+              <span className="reset-dialog-icon"><TriangleAlert /></span>
+              <h2 id="reset-dialog-title">Вернуть исходный график?</h2>
+              <p id="reset-dialog-description">Все применённые перестановки за октябрь будут отменены. График вернётся к первоначальному состоянию.</p>
+              <div className="reset-dialog-actions">
+                <Button variant="outline" autoFocus onClick={() => setResetConfirmOpen(false)}>Отмена</Button>
+                <Button variant="destructive" onClick={resetToOriginalSchedule}><RotateCcw />Вернуть исходный</Button>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     </TooltipProvider>
   );
