@@ -440,7 +440,9 @@ export default function Home() {
 
     if (workflow === "remove" && selectedShift && scope === "block") {
       const block = findWorkBlock(schedule, target.employeeId, target.id);
-      if (block.length) absence = { employeeId: target.employeeId, start: block[0].start, end: block[block.length - 1].end };
+      const selectedIndex = block.findIndex((shift) => shift.id === target.id);
+      const remainingBlock = selectedIndex >= 0 ? block.slice(selectedIndex) : [];
+      if (remainingBlock.length) absence = { employeeId: target.employeeId, start: target.start, end: remainingBlock[remainingBlock.length - 1].end };
     } else if (workflow === "remove" && selectedShift && scope === "week") {
       absence = { employeeId: target.employeeId, start: target.start, end: addDays(target.start, 7) };
     } else if (workflow === "remove" && selectedShift && scope === "custom") {
@@ -806,7 +808,7 @@ export default function Home() {
               ) : workflow === "remove" ? (
                 <>
                   {selectedShift && <div className="form-section"><h3>Период отсутствия</h3><RadioGroup value={scope} onValueChange={setScope} className="scope-list">
-                    {[["shift", "Только выбранная смена", shiftLabel(selectedShift)], ["block", "Текущий рабочий блок", "Все связанные смены подряд"], ["week", "7 календарных дней", "Начиная с выбранной даты"], ["custom", "Другой период", "Указать начало и окончание"]].map(([value, title, description]) => <label key={value} className={cn("scope-option", scope === value && "scope-option-active")}><RadioGroupItem value={value} /><span><strong>{title}</strong><small>{description}</small></span></label>)}
+                    {[["shift", "Только выбранная смена", shiftLabel(selectedShift)], ["block", "До конца рабочего блока", "Выбранная и следующие смены блока"], ["week", "7 календарных дней", "Начиная с выбранной даты"], ["custom", "Другой период", "Указать начало и окончание"]].map(([value, title, description]) => <label key={value} className={cn("scope-option", scope === value && "scope-option-active")}><RadioGroupItem value={value} /><span><strong>{title}</strong><small>{description}</small></span></label>)}
                   </RadioGroup></div>}
                   {(!selectedShift || scope === "custom") && <div className={cn("custom-period", !selectedShift && "custom-period-standalone")}><label>Начало<input type="datetime-local" value={customStart} onChange={(event) => setCustomStart(event.target.value)} /></label><label>Окончание<input type="datetime-local" value={customEnd} onChange={(event) => setCustomEnd(event.target.value)} /></label></div>}
                   <div className="form-section"><h3>Причина</h3><Select value={reason} onValueChange={setReason}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="absence">Неявка</SelectItem><SelectItem value="sickday">Sick day</SelectItem><SelectItem value="medical">Больничный</SelectItem><SelectItem value="vacation">Отпуск</SelectItem><SelectItem value="other">Другое</SelectItem></SelectContent></Select></div>
