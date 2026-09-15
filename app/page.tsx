@@ -133,6 +133,13 @@ const NAV_ITEMS = [
 
 const DAY_WIDTH = 154;
 const NAME_WIDTH = 196;
+const STORAGE_KEY = "monitoring-schedule:october-2026:v1";
+
+type PersistedSchedule = {
+  version: 1;
+  historyCount: number;
+  schedule: Array<Omit<Shift, "start" | "end"> & { start: string; end: string }>;
+};
 
 type ShiftSelection = {
   person: Person;
@@ -229,12 +236,58 @@ export default function Home() {
   const [replacement, setReplacement] = useState("");
   const [customStart, setCustomStart] = useState("2026-10-03T08:00");
   const [customEnd, setCustomEnd] = useState("2026-10-03T20:00");
+  const [storageReady, setStorageReady] = useState(false);
   const days = useMemo(() => Array.from({ length: 31 }, (_, index) => index + 1), []);
   const displaySchedule = previewSchedule ?? schedule;
   const currentValidation = useMemo(
     () => validateSchedule({ schedule: displaySchedule, employees: EMPLOYEES, period: octoberPeriod() }),
     [displaySchedule],
   );
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const persisted = JSON.parse(raw) as Partial<PersistedSchedule>;
+        if (persisted.version === 1 && Array.isArray(persisted.schedule)) {
+          const restored = persisted.schedule.map((shift) => ({
+            ...shift,
+            start: new Date(shift.start),
+            end: new Date(shift.end),
+          }));
+          const datesAreValid = restored.every(
+            (shift) => !Number.isNaN(shift.start.getTime()) && !Number.isNaN(shift.end.getTime()),
+          );
+          if (datesAreValid) {
+            setSchedule(restored);
+            setHistoryCount(Number.isInteger(persisted.historyCount) ? persisted.historyCount! : 0);
+          }
+        }
+      }
+    } catch {
+      // Повреждённые локальные данные не должны мешать открыть исходный график.
+    } finally {
+      setStorageReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!storageReady) return;
+    const persisted: PersistedSchedule = {
+      version: 1,
+      historyCount,
+      schedule: schedule.map((shift) => ({
+        ...shift,
+        start: shift.start.toISOString(),
+        end: shift.end.toISOString(),
+      })),
+    };
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+    } catch {
+      // График продолжит работать в текущей вкладке, даже если хранилище браузера недоступно.
+    }
+  }, [historyCount, schedule, storageReady]);
 
   function openWorkflow(shift: ShiftSelection, nextWorkflow: Exclude<Workflow, null>) {
     setSelectedShift(shift);
