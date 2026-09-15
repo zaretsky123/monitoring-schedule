@@ -1,0 +1,626 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
+import {
+  CalendarDays,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Download,
+  Eye,
+  FileSpreadsheet,
+  History,
+  LockKeyhole,
+  Menu,
+  Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  Settings2,
+  ShieldCheck,
+  Sun,
+  UserRound,
+  UserRoundCog,
+  Users,
+  UserX,
+  WandSparkles,
+} from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import { addDays } from "@/lib/schedule/calendar";
+import {
+  createOctober2026Schedule,
+  employeeIdByName,
+  employeeNameById,
+  EMPLOYEES,
+  octoberPeriod,
+} from "@/lib/schedule/sample";
+import { solveSchedule } from "@/lib/schedule/solver";
+import { countMonthlyOffPairs, findWorkBlock, validateSchedule } from "@/lib/schedule/validator";
+import type { Absence, ScheduleOption, Shift } from "@/lib/schedule/types";
+
+const PEOPLE = ["ФИО 1", "ФИО 2", "ФИО 3", "ФИО 4"] as const;
+type Person = (typeof PEOPLE)[number];
+type ShiftKind = "day" | "night";
+type Workflow = "remove" | "replace" | null;
+type ModelContextDocument = Document & {
+  modelContext?: {
+    registerTool: (tool: {
+      name: string;
+      title: string;
+      description: string;
+      inputSchema: object;
+      annotations: { readOnlyHint: boolean; untrustedContentHint: boolean };
+      execute: (input: unknown) => unknown;
+    }, options: { signal: AbortSignal }) => void | Promise<void>;
+  };
+};
+
+const ASSIGNMENTS: { day: Person; night: Person }[] = [
+  { day: "ФИО 2", night: "ФИО 1" },
+  { day: "ФИО 2", night: "ФИО 3" },
+  { day: "ФИО 4", night: "ФИО 3" },
+  { day: "ФИО 4", night: "ФИО 2" },
+  { day: "ФИО 1", night: "ФИО 2" },
+  { day: "ФИО 1", night: "ФИО 4" },
+  { day: "ФИО 3", night: "ФИО 4" },
+  { day: "ФИО 3", night: "ФИО 1" },
+  { day: "ФИО 2", night: "ФИО 1" },
+  { day: "ФИО 2", night: "ФИО 3" },
+  { day: "ФИО 4", night: "ФИО 3" },
+  { day: "ФИО 4", night: "ФИО 2" },
+  { day: "ФИО 1", night: "ФИО 2" },
+  { day: "ФИО 1", night: "ФИО 4" },
+  { day: "ФИО 3", night: "ФИО 4" },
+  { day: "ФИО 3", night: "ФИО 1" },
+  { day: "ФИО 2", night: "ФИО 1" },
+  { day: "ФИО 2", night: "ФИО 3" },
+  { day: "ФИО 4", night: "ФИО 3" },
+  { day: "ФИО 4", night: "ФИО 2" },
+  { day: "ФИО 1", night: "ФИО 2" },
+  { day: "ФИО 1", night: "ФИО 4" },
+  { day: "ФИО 3", night: "ФИО 4" },
+  { day: "ФИО 3", night: "ФИО 1" },
+  { day: "ФИО 2", night: "ФИО 1" },
+  { day: "ФИО 2", night: "ФИО 3" },
+  { day: "ФИО 4", night: "ФИО 3" },
+  { day: "ФИО 4", night: "ФИО 2" },
+  { day: "ФИО 1", night: "ФИО 2" },
+  { day: "ФИО 1", night: "ФИО 4" },
+  { day: "ФИО 3", night: "ФИО 4" },
+];
+
+const NAV_ITEMS = [
+  { label: "График", icon: CalendarDays, active: true },
+  { label: "Сотрудники", icon: Users },
+  { label: "Правила", icon: ShieldCheck },
+  { label: "История", icon: History },
+  { label: "Выгрузка", icon: FileSpreadsheet },
+];
+
+const DAY_WIDTH = 154;
+const NAME_WIDTH = 196;
+
+type ShiftSelection = {
+  person: Person;
+  kind: ShiftKind;
+  startDay: number;
+};
+
+function dayInfo(day: number) {
+  const date = new Date(Date.UTC(2026, 9, day));
+  const weekday = new Intl.DateTimeFormat("ru-RU", {
+    weekday: "short",
+    timeZone: "UTC",
+  })
+    .format(date)
+    .replace(".", "");
+  const dayOfWeek = date.getUTCDay();
+  return { weekday, weekend: dayOfWeek === 0 || dayOfWeek === 6 };
+}
+
+function nightLabel(startDay: number) {
+  if (startDay === 0) return "30 сентября, 20:00 — 1 октября, 08:00";
+  if (startDay === 31) return "31 октября, 20:00 — 1 ноября, 08:00";
+  return `${startDay} октября, 20:00 — ${startDay + 1} октября, 08:00`;
+}
+
+function shiftLabel(shift: ShiftSelection | null) {
+  if (!shift) return "";
+  return shift.kind === "day"
+    ? `${shift.startDay} октября, 08:00–20:00`
+    : nightLabel(shift.startDay);
+}
+
+function shiftIdFor(startDay: number, kind: ShiftKind) {
+  const date = startDay === 0 ? "2026-09-30" : `2026-10-${String(startDay).padStart(2, "0")}`;
+  return `${date}:${kind === "day" ? "D" : "N"}`;
+}
+
+function personStats(person: Person, schedule: Shift[]) {
+  const employeeId = employeeIdByName[person];
+  const monthly = schedule.filter((shift) => shift.start >= octoberPeriod().start && shift.start < octoberPeriod().end && shift.employeeId === employeeId);
+  const dayCount = monthly.filter((shift) => shift.type === "D").length;
+  const nightCount = monthly.filter((shift) => shift.type === "N").length;
+  const planned = schedule.filter((shift) => shift.start >= octoberPeriod().start && shift.start < octoberPeriod().end && shift.plannedEmployeeId === employeeId).length * 12;
+  const hours = monthly.length * 12;
+  return {
+    dayCount,
+    nightCount,
+    total: monthly.length,
+    hours,
+    delta: hours - planned,
+    offPairs: countMonthlyOffPairs(schedule, employeeId, octoberPeriod()),
+  };
+}
+
+function changeDateLabel(shiftId: string) {
+  const [date, type] = shiftId.split(":");
+  const day = Number(date.slice(-2));
+  return type === "D" ? `${day} октября, день` : `${day} октября, ночь`;
+}
+
+function NavButton({ label, icon: Icon, active, expanded }: {
+  label: string;
+  icon: typeof CalendarDays;
+  active?: boolean;
+  expanded: boolean;
+}) {
+  const button = (
+    <button type="button" className={cn("nav-button", active && "nav-button-active")} aria-current={active ? "page" : undefined}>
+      <Icon className="size-[19px]" />
+      {expanded && <span>{label}</span>}
+    </button>
+  );
+  if (expanded) return button;
+  return <Tooltip><TooltipTrigger asChild>{button}</TooltipTrigger><TooltipContent side="right" sideOffset={10}>{label}</TooltipContent></Tooltip>;
+}
+
+export default function Home() {
+  const [schedule, setSchedule] = useState<Shift[]>(() => createOctober2026Schedule());
+  const [previewSchedule, setPreviewSchedule] = useState<Shift[] | null>(null);
+  const [options, setOptions] = useState<ScheduleOption[]>([]);
+  const [selectedOptionKey, setSelectedOptionKey] = useState("");
+  const [expandedOptionKey, setExpandedOptionKey] = useState("");
+  const [calculationError, setCalculationError] = useState("");
+  const [historyCount, setHistoryCount] = useState(0);
+  const [sidebarExpanded, setSidebarExpanded] = useState(true);
+  const [hoveredPerson, setHoveredPerson] = useState<Person | null>(null);
+  const [focusPerson, setFocusPerson] = useState<Person | null>(null);
+  const [selectedEmployee, setSelectedEmployee] = useState<Person | null>(null);
+  const [employeeOpen, setEmployeeOpen] = useState(false);
+  const [selectedShift, setSelectedShift] = useState<ShiftSelection | null>(null);
+  const [workflow, setWorkflow] = useState<Workflow>(null);
+  const [scope, setScope] = useState("shift");
+  const [reason, setReason] = useState("absence");
+  const [replacement, setReplacement] = useState("");
+  const [customStart, setCustomStart] = useState("2026-10-03T08:00");
+  const [customEnd, setCustomEnd] = useState("2026-10-03T20:00");
+  const days = useMemo(() => Array.from({ length: 31 }, (_, index) => index + 1), []);
+  const displaySchedule = previewSchedule ?? schedule;
+  const currentValidation = useMemo(
+    () => validateSchedule({ schedule: displaySchedule, employees: EMPLOYEES, period: octoberPeriod() }),
+    [displaySchedule],
+  );
+
+  function openWorkflow(shift: ShiftSelection, nextWorkflow: Exclude<Workflow, null>) {
+    setSelectedShift(shift);
+    setWorkflow(nextWorkflow);
+    setScope("shift");
+    setReplacement("");
+    setOptions([]);
+    setSelectedOptionKey("");
+    setExpandedOptionKey("");
+    setCalculationError("");
+    setPreviewSchedule(null);
+    const target = schedule.find((item) => item.id === shiftIdFor(shift.startDay, shift.kind));
+    if (target) {
+      setCustomStart(target.start.toISOString().slice(0, 16));
+      setCustomEnd(target.end.toISOString().slice(0, 16));
+    }
+  }
+
+  function closeWorkflow() {
+    setWorkflow(null);
+    setOptions([]);
+    setSelectedOptionKey("");
+    setExpandedOptionKey("");
+    setCalculationError("");
+    setPreviewSchedule(null);
+  }
+
+  function openEmployeeAbsence(person: Person) {
+    setSelectedEmployee(person);
+    setSelectedShift(null);
+    setEmployeeOpen(false);
+    setWorkflow("remove");
+    setScope("custom");
+    setCustomStart("2026-10-01T00:00");
+    setCustomEnd("2026-10-02T00:00");
+    setOptions([]);
+    setSelectedOptionKey("");
+    setExpandedOptionKey("");
+    setCalculationError("");
+    setPreviewSchedule(null);
+  }
+
+  useEffect(() => {
+    const context = (document as ModelContextDocument).modelContext;
+    if (!context?.registerTool) return;
+    const lifecycle = new AbortController();
+    void Promise.resolve(context.registerTool({
+      name: "start_shift_absence",
+      title: "Открыть оформление отсутствия",
+      description: "Открывает на странице форму отсутствия для конкретной назначенной смены. График не меняется, пока пользователь не выберет и не применит рассчитанный вариант.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          employeeName: { type: "string", enum: PEOPLE },
+          day: { type: "integer", minimum: 1, maximum: 31 },
+          shiftType: { type: "string", enum: ["day", "night"] },
+        },
+        required: ["employeeName", "day", "shiftType"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, untrustedContentHint: false },
+      execute(input) {
+        const value = input as { employeeName?: string; day?: number; shiftType?: string };
+        const person = PEOPLE.find((item) => item === value.employeeName);
+        if (!person || !Number.isInteger(value.day) || !value.day || value.day < 1 || value.day > 31 || (value.shiftType !== "day" && value.shiftType !== "night")) throw new Error("Некорректные параметры смены");
+        const engineShift = schedule.find((shift) => shift.id === shiftIdFor(value.day!, value.shiftType as ShiftKind));
+        if (!engineShift || employeeNameById[engineShift.employeeId] !== person) throw new Error("Сотрудник не назначен на эту смену");
+        openWorkflow({ person, kind: value.shiftType as ShiftKind, startDay: value.day }, "remove");
+        return { status: "opened", employeeName: person, day: value.day, shiftType: value.shiftType };
+      },
+    }, { signal: lifecycle.signal })).catch(() => undefined);
+    return () => lifecycle.abort();
+  }, [schedule]);
+
+  function renderShiftSegment(person: Person, kind: ShiftKind, startDay: number, segment: "left" | "center" | "right") {
+    const shift = { person, kind, startDay } satisfies ShiftSelection;
+    const longLabel = kind === "day" ? `${startDay} октября, 08:00–20:00` : nightLabel(startDay);
+    const scheduleShift = displaySchedule.find((item) => item.id === shiftIdFor(startDay, kind));
+    const changed = Boolean(scheduleShift && scheduleShift.employeeId !== scheduleShift.plannedEmployeeId);
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button type="button" className={cn("shift-segment", kind === "day" ? "shift-day" : "shift-night", segment === "left" && "segment-left", segment === "right" && "segment-right", changed && "shift-changed")} aria-label={`${person}. ${kind === "day" ? "Дневная" : "Ночная"} смена: ${longLabel}`} title={longLabel}>
+            <span>{kind === "day" ? "Д" : "Н"}</span>
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-60 rounded-xl p-2 shadow-xl">
+          <DropdownMenuLabel className="px-2 pb-2 pt-1">
+            <span className="block text-[13px] text-slate-500">{kind === "day" ? "Дневная смена" : "Ночная смена"}</span>
+            <span className="mt-0.5 block text-sm font-semibold text-slate-900">{person}</span>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem className="rounded-lg py-2.5" variant="destructive" onSelect={() => openWorkflow(shift, "remove")}><UserX />Убрать</DropdownMenuItem>
+          <DropdownMenuItem className="rounded-lg py-2.5" onSelect={() => openWorkflow(shift, "replace")}><UserRoundCog />Заменить</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
+
+  function calculateOptions() {
+    const employeeId = selectedShift ? employeeIdByName[selectedShift.person] : selectedEmployee ? employeeIdByName[selectedEmployee] : "";
+    let target = selectedShift ? schedule.find((shift) => shift.id === shiftIdFor(selectedShift.startDay, selectedShift.kind)) : undefined;
+    let absence: Absence | null = target ? { employeeId: target.employeeId, start: target.start, end: target.end } : null;
+
+    if (!selectedShift && workflow === "remove") {
+      const start = new Date(`${customStart}:00Z`);
+      const end = new Date(`${customEnd}:00Z`);
+      if (!(start < end)) {
+        setCalculationError("Окончание периода должно быть позже начала.");
+        return;
+      }
+      absence = { employeeId, start, end };
+      target = schedule.find((shift) => shift.employeeId === employeeId && shift.start < end && shift.end > start);
+    }
+
+    if (!target || !absence) {
+      setCalculationError("Выбранный период не затрагивает смены сотрудника.");
+      return;
+    }
+
+    if (workflow === "remove" && selectedShift && scope === "block") {
+      const block = findWorkBlock(schedule, target.employeeId, target.id);
+      if (block.length) absence = { employeeId: target.employeeId, start: block[0].start, end: block[block.length - 1].end };
+    } else if (workflow === "remove" && selectedShift && scope === "week") {
+      absence = { employeeId: target.employeeId, start: target.start, end: addDays(target.start, 7) };
+    } else if (workflow === "remove" && selectedShift && scope === "custom") {
+      const start = new Date(`${customStart}:00Z`);
+      const end = new Date(`${customEnd}:00Z`);
+      if (!(start < end)) {
+        setCalculationError("Окончание периода должно быть позже начала.");
+        return;
+      }
+      absence = { employeeId: target.employeeId, start, end };
+    }
+
+    const requiredAssignments = workflow === "replace" && replacement
+      ? { [target.id]: employeeIdByName[replacement] }
+      : {};
+    const result = solveSchedule({
+      schedule,
+      employees: EMPLOYEES,
+      period: octoberPeriod(),
+      absences: [absence],
+      recalculationStart: target.start,
+      requiredAssignments,
+      maxExtraChanges: 2,
+      maxOptions: 3,
+    });
+
+    if (!result.found) {
+      setOptions([]);
+      setCalculationError(result.reason);
+      setPreviewSchedule(null);
+      return;
+    }
+    setCalculationError("");
+    setOptions(result.options);
+    setSelectedOptionKey(result.recommendedKey);
+    setPreviewSchedule(result.options[0].schedule);
+  }
+
+  function chooseOption(option: ScheduleOption) {
+    setSelectedOptionKey(option.key);
+    setPreviewSchedule(option.schedule);
+  }
+
+  function applySelectedOption() {
+    const option = options.find((item) => item.key === selectedOptionKey);
+    if (!option) return;
+    setSchedule(option.schedule.map(({ baseEmployeeId: _baseEmployeeId, ...shift }) => shift));
+    setHistoryCount((count) => count + 1);
+    closeWorkflow();
+  }
+
+  function exportExcel() {
+    const rows: (string | number)[][] = [
+      ["График круглосуточного мониторинга — октябрь 2026"],
+      ["Сотрудник"],
+      [""],
+    ];
+    for (const day of days) {
+      rows[1].push(day, "", "");
+      rows[2].push("00–08", "08–20", "20–24");
+    }
+    for (const person of PEOPLE) {
+      const employeeId = employeeIdByName[person];
+      const row: (string | number)[] = [person];
+      for (const day of days) {
+        const left = displaySchedule.find((shift) => shift.id === shiftIdFor(day - 1, "night"));
+        const center = displaySchedule.find((shift) => shift.id === shiftIdFor(day, "day"));
+        const right = displaySchedule.find((shift) => shift.id === shiftIdFor(day, "night"));
+        row.push(left?.employeeId === employeeId ? "Н" : "", center?.employeeId === employeeId ? "Д" : "", right?.employeeId === employeeId ? "Н" : "");
+      }
+      rows.push(row);
+    }
+
+    const scheduleSheet = XLSX.utils.aoa_to_sheet(rows);
+    scheduleSheet["!merges"] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 93 } },
+      ...days.map((_, index) => ({ s: { r: 1, c: 1 + index * 3 }, e: { r: 1, c: 3 + index * 3 } })),
+    ];
+    scheduleSheet["!cols"] = [{ wch: 20 }, ...days.flatMap(() => [{ wch: 7 }, { wch: 12 }, { wch: 7 }])];
+
+    const changes = displaySchedule
+      .filter((shift) => shift.start >= octoberPeriod().start && shift.start < octoberPeriod().end && shift.employeeId !== shift.plannedEmployeeId)
+      .map((shift) => [changeDateLabel(shift.id), shift.type === "D" ? "Дневная" : "Ночная", employeeNameById[shift.plannedEmployeeId], employeeNameById[shift.employeeId]]);
+    const changesSheet = XLSX.utils.aoa_to_sheet([
+      ["Изменения относительно первоначального графика"],
+      ["Смена", "Тип", "По плану", "Текущий сотрудник"],
+      ...(changes.length ? changes : [["Изменений нет", "", "", ""]]),
+    ]);
+    changesSheet["!cols"] = [{ wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 20 }];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, scheduleSheet, "График");
+    XLSX.utils.book_append_sheet(workbook, changesSheet, "Изменения");
+    XLSX.writeFile(workbook, "График_мониторинга_октябрь_2026.xlsx", { compression: true });
+  }
+
+  const gridStyle = { gridTemplateColumns: `${NAME_WIDTH}px repeat(31, ${DAY_WIDTH}px)` };
+  const selectedStats = selectedEmployee ? personStats(selectedEmployee, displaySchedule) : null;
+
+  return (
+    <TooltipProvider>
+      <div className="app-shell">
+        <aside className={cn("sidebar", sidebarExpanded ? "sidebar-open" : "sidebar-closed")}>
+          <div className="sidebar-brand">
+            <div className="brand-mark" aria-hidden="true"><CalendarDays className="size-5" /></div>
+            {sidebarExpanded && <div className="min-w-0"><div className="brand-title">Мониторинг</div><div className="brand-caption">Управление сменами</div></div>}
+          </div>
+          <nav className="sidebar-nav" aria-label="Основное меню">
+            {NAV_ITEMS.map((item) => <NavButton key={item.label} {...item} expanded={sidebarExpanded} />)}
+          </nav>
+          <div className="sidebar-bottom">
+            <NavButton label="Настройки" icon={Settings2} expanded={sidebarExpanded} />
+            <button type="button" className="collapse-button" onClick={() => setSidebarExpanded((value) => !value)} aria-label={sidebarExpanded ? "Свернуть меню" : "Развернуть меню"}>
+              {sidebarExpanded ? <PanelLeftClose /> : <PanelLeftOpen />}{sidebarExpanded && <span>Свернуть меню</span>}
+            </button>
+          </div>
+        </aside>
+
+        <main className="main-area">
+          <header className="topbar">
+            <div className="topbar-heading"><h1>График работы</h1><span className={cn("coverage-status", !currentValidation.valid && "coverage-error")}><span className="status-dot" />{previewSchedule ? "Предпросмотр варианта" : currentValidation.valid ? "Все требования выполнены" : `${currentValidation.issues.length} нарушений`}</span></div>
+            <div className="topbar-actions">
+              <Button variant="outline" size="icon" aria-label="Предыдущий месяц"><ChevronLeft /></Button>
+              <button type="button" className="month-button"><CalendarDays />Октябрь 2026</button>
+              <Button variant="outline" size="icon" aria-label="Следующий месяц"><ChevronRight /></Button>
+              <Button className="export-button" onClick={exportExcel}><Download />Скачать Excel</Button>
+              <button type="button" className="profile-button" aria-label="Профиль пользователя">А</button>
+            </div>
+          </header>
+
+          <div className="content-area">
+            <section className="schedule-card" aria-labelledby="schedule-title">
+              <div className="schedule-toolbar">
+                <div><h2 id="schedule-title">Расписание</h2><p>Дневная смена 08:00–20:00 · ночная смена 20:00–08:00</p></div>
+                <div className="toolbar-right">
+                  {focusPerson && <button className="focus-chip" onClick={() => setFocusPerson(null)}>Показан {focusPerson}<span>Сбросить</span></button>}
+                  <div className="legend" aria-label="Обозначения смен"><span><Sun />День</span><span><Moon />Ночь</span></div>
+                </div>
+              </div>
+
+              <div className="schedule-scroll" tabIndex={0} aria-label="График за октябрь 2026">
+                <div className="schedule-grid" style={gridStyle}>
+                  <div className="sticky-name header-name"><span>Сотрудники</span><span className="header-count">4</span></div>
+                  {days.map((day) => { const info = dayInfo(day); return <div key={`date-${day}`} className={cn("date-header", info.weekend && "weekend-header")}><strong>{day}</strong><span>{info.weekday}</span></div>; })}
+
+                  <div className="sticky-name time-name"><Clock3 />Время</div>
+                  {days.map((day) => { const info = dayInfo(day); return <div key={`time-${day}`} className={cn("time-cell", info.weekend && "weekend-cell")}><span>00–08</span><span>08–20</span><span>20–24</span></div>; })}
+
+                  {PEOPLE.map((person, personIndex) => {
+                    const isFocusedOut = Boolean(focusPerson && focusPerson !== person);
+                    const isHighlighted = hoveredPerson === person || focusPerson === person;
+                    return [
+                      <button key={`${person}-name`} type="button" className={cn("sticky-name employee-name", isHighlighted && "employee-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)} onFocus={() => setHoveredPerson(person)} onBlur={() => setHoveredPerson(null)} onClick={() => { setSelectedEmployee(person); setEmployeeOpen(true); }}>
+                        <span className={`employee-avatar avatar-${personIndex + 1}`}>{personIndex + 1}</span><span>{person}</span><ChevronRight className="employee-chevron" />
+                      </button>,
+                      ...days.map((day) => {
+                        const info = dayInfo(day);
+                        const leftShift = displaySchedule.find((shift) => shift.id === shiftIdFor(day - 1, "night"));
+                        const dayShift = displaySchedule.find((shift) => shift.id === shiftIdFor(day, "day"));
+                        const nightShift = displaySchedule.find((shift) => shift.id === shiftIdFor(day, "night"));
+                        const leftOwner = leftShift ? employeeNameById[leftShift.employeeId] : null;
+                        const dayOwner = dayShift ? employeeNameById[dayShift.employeeId] : null;
+                        const nightOwner = nightShift ? employeeNameById[nightShift.employeeId] : null;
+                        return <div key={`${person}-${day}`} className={cn("schedule-cell", info.weekend && "weekend-cell", isHighlighted && "cell-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)}>
+                          <div className="segment-slot left-slot">{leftOwner === person && renderShiftSegment(person, "night", day - 1, "left")}</div>
+                          <div className="segment-slot center-slot">{dayOwner === person && renderShiftSegment(person, "day", day, "center")}</div>
+                          <div className="segment-slot right-slot">{nightOwner === person && renderShiftSegment(person, "night", day, "right")}</div>
+                        </div>;
+                      }),
+                    ];
+                  })}
+
+                  <div className="sticky-name add-employee-row" aria-disabled="true"><span className="add-icon"><Plus /></span>Добавить сотрудника</div>
+                  {days.map((day) => <div key={`add-${day}`} className="add-row-cell" />)}
+                </div>
+              </div>
+
+              <div className="schedule-footer"><span><Menu />Для действий нажмите на нужную смену</span><span>Таблица прокручивается по горизонтали</span></div>
+            </section>
+
+            <section className="summary-grid" aria-label="Сводка графика">
+              <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>62 из 62</strong><span>смены закрыты</span></div></article>
+              <article className="summary-card"><span className="summary-icon cyan"><Clock3 /></span><div><strong>12 часов</strong><span>продолжительность смены</span></div></article>
+              <article className="summary-card"><span className="summary-icon violet"><Users /></span><div><strong>4 сотрудника</strong><span>в текущем графике</span></div></article>
+              <article className="summary-card"><span className="summary-icon green"><ShieldCheck /></span><div><strong>{currentValidation.valid ? "Без нарушений" : currentValidation.issues.length}</strong><span>обязательные правила</span></div></article>
+            </section>
+          </div>
+        </main>
+
+        <Sheet open={employeeOpen} onOpenChange={setEmployeeOpen}>
+          <SheetContent className="employee-sheet sm:max-w-[430px]">
+            {selectedEmployee && selectedStats && <>
+              <SheetHeader className="sheet-header-custom"><div className="sheet-avatar"><UserRound /></div><SheetTitle className="text-xl">{selectedEmployee}</SheetTitle><SheetDescription>Показатели за октябрь 2026</SheetDescription></SheetHeader>
+              <div className="sheet-body">
+                <div className="employee-stats"><div><strong>{selectedStats.total}</strong><span>смен</span></div><div><strong>{selectedStats.hours}</strong><span>часов</span></div><div><strong>{selectedStats.dayCount}</strong><span>дневных</span></div><div><strong>{selectedStats.nightCount}</strong><span>ночных</span></div></div>
+                <div className="detail-line"><span>Отклонение от плана</span><strong>{selectedStats.delta > 0 ? "+" : ""}{selectedStats.delta} часов</strong></div>
+                <div className="detail-line"><span>Пар полных выходных</span><strong>{selectedStats.offPairs}</strong></div>
+                <div className="action-list">
+                  <button type="button" onClick={() => openEmployeeAbsence(selectedEmployee)}><UserX /><span><strong>Указать недоступность</strong><small>Один день, рабочий блок или период</small></span><ChevronRight /></button>
+                  <button type="button" onClick={() => { setFocusPerson(selectedEmployee); setEmployeeOpen(false); }}><Eye /><span><strong>Показать только его график</strong><small>Остальные дорожки будут приглушены</small></span><ChevronRight /></button>
+                  <button type="button"><History /><span><strong>История изменений</strong><small>{historyCount ? `Применено изменений: ${historyCount}` : "Изменений пока нет"}</small></span><ChevronRight /></button>
+                  <button type="button"><LockKeyhole /><span><strong>Закрепить смены</strong><small>Запретить автоматическую перестановку</small></span><ChevronRight /></button>
+                </div>
+              </div>
+            </>}
+          </SheetContent>
+        </Sheet>
+
+        <Sheet open={workflow !== null} onOpenChange={(open) => !open && closeWorkflow()}>
+          <SheetContent className="workflow-sheet sm:max-w-[480px]">
+            <SheetHeader className="sheet-header-custom">
+              <SheetTitle className="text-xl">{options.length ? "Варианты графика" : workflow === "remove" ? "Убрать сотрудника со смены" : "Заменить сотрудника"}</SheetTitle>
+              <SheetDescription>{selectedShift ? `${selectedShift.person} · ${shiftLabel(selectedShift)}` : `${selectedEmployee ?? "Сотрудник"} · укажите период`}</SheetDescription>
+            </SheetHeader>
+
+            <div className="sheet-body">
+              {options.length ? (
+                <div className="options-list">
+                  <p className="options-intro">Все варианты закрывают смены и проходят обязательные проверки. Нажмите на вариант, чтобы увидеть его в таблице.</p>
+                  {options.map((option, index) => {
+                    const selected = option.key === selectedOptionKey;
+                    const expanded = option.key === expandedOptionKey;
+                    return (
+                      <article key={option.key} className={cn("option-card", selected && "option-card-selected")}>
+                        <button type="button" className="option-main" onClick={() => chooseOption(option)}>
+                          <span className="option-title">Вариант {index + 1}{index === 0 && <em><WandSparkles />Лучший</em>}</span>
+                          <span className="option-compact"><span>Изменено: <strong>{option.metrics.changedCount} смен</strong></span><span>Затронуто: <strong>{option.metrics.affectedEmployeeCount} сотрудника</strong></span></span>
+                        </button>
+                        <button type="button" className="details-toggle" onClick={() => setExpandedOptionKey(expanded ? "" : option.key)}>{expanded ? "Скрыть подробности" : "Подробнее"}<ChevronRight className={cn(expanded && "rotate-90")} /></button>
+                        {expanded && (
+                          <div className="option-details">
+                            <h4>Перестановки</h4>
+                            {option.metrics.changes.map((change) => <div className="change-line" key={change.shiftId}><span>{changeDateLabel(change.shiftId)}</span><strong>{employeeNameById[change.fromEmployeeId]} → {employeeNameById[change.toEmployeeId]}</strong></div>)}
+                            <h4>Отклонение от плана</h4>
+                            {Object.entries(option.metrics.hours).filter(([, metrics]) => metrics.delta !== 0).map(([employeeId, metrics]) => <div className="change-line" key={employeeId}><span>{employeeNameById[employeeId]}</span><strong className={metrics.delta > 0 ? "positive-delta" : "negative-delta"}>{metrics.delta > 0 ? "+" : ""}{metrics.delta} часов</strong></div>)}
+                            <div className="checks-box"><CheckCircle2 /><span>Покрытие 24/7, отдых 12 часов, блоки до 4 смен, две пары выходных и 42 часа отдыха в неделю соблюдены.</span></div>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : calculationError ? (
+                <div className="calculation-error"><UserX /><h3>Вариант не найден</h3><p>{calculationError}</p><Button variant="outline" onClick={() => setCalculationError("")}>Изменить условия</Button></div>
+              ) : workflow === "remove" ? (
+                <>
+                  {selectedShift && <div className="form-section"><h3>Период отсутствия</h3><RadioGroup value={scope} onValueChange={setScope} className="scope-list">
+                    {[["shift", "Только выбранная смена", shiftLabel(selectedShift)], ["block", "Текущий рабочий блок", "Все связанные смены подряд"], ["week", "7 календарных дней", "Начиная с выбранной даты"], ["custom", "Другой период", "Указать начало и окончание"]].map(([value, title, description]) => <label key={value} className={cn("scope-option", scope === value && "scope-option-active")}><RadioGroupItem value={value} /><span><strong>{title}</strong><small>{description}</small></span></label>)}
+                  </RadioGroup></div>}
+                  {(!selectedShift || scope === "custom") && <div className={cn("custom-period", !selectedShift && "custom-period-standalone")}><label>Начало<input type="datetime-local" value={customStart} onChange={(event) => setCustomStart(event.target.value)} /></label><label>Окончание<input type="datetime-local" value={customEnd} onChange={(event) => setCustomEnd(event.target.value)} /></label></div>}
+                  <div className="form-section"><h3>Причина</h3><Select value={reason} onValueChange={setReason}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="absence">Неявка</SelectItem><SelectItem value="sickday">Sick day</SelectItem><SelectItem value="medical">Больничный</SelectItem><SelectItem value="vacation">Отпуск</SelectItem><SelectItem value="other">Другое</SelectItem></SelectContent></Select></div>
+                </>
+              ) : (
+                <div className="form-section"><h3>Кто выйдет на смену</h3><Select value={replacement} onValueChange={setReplacement}><SelectTrigger className="w-full"><SelectValue placeholder="Выберите сотрудника" /></SelectTrigger><SelectContent>{PEOPLE.filter((person) => person !== selectedShift?.person).map((person) => <SelectItem value={person} key={person}>{person}</SelectItem>)}</SelectContent></Select><div className="replacement-note">Система проверит выбранную замену и при необходимости предложит перестановки до конца месяца.</div></div>
+              )}
+            </div>
+
+            <SheetFooter className="sheet-footer-custom">
+              {options.length ? <><Button variant="outline" onClick={() => { setOptions([]); setPreviewSchedule(null); }}>Назад</Button><Button className="calculate-button" onClick={applySelectedOption}>Применить вариант</Button></> : <><Button variant="outline" onClick={closeWorkflow}>Отмена</Button>{!calculationError && <Button className="calculate-button" onClick={calculateOptions} disabled={workflow === "replace" && !replacement}>{workflow === "remove" ? "Рассчитать варианты" : "Проверить замену"}</Button>}</>}
+            </SheetFooter>
+          </SheetContent>
+        </Sheet>
+      </div>
+    </TooltipProvider>
+  );
+}
