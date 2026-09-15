@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   History,
   LockKeyhole,
+  Loader2,
   Menu,
   Moon,
   PanelLeftClose,
@@ -28,7 +29,6 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -741,7 +741,7 @@ export default function Home() {
             <div className="sheet-body">
               {calculating ? (
                 <div className="calculation-loading" role="status" aria-live="polite">
-                  <span className="calculation-spinner"><Spinner /></span>
+                  <span className="calculation-spinner"><Loader2 className="animate-spin" aria-hidden="true" /></span>
                   <h3>Подбираем лучшие варианты…</h3>
                   <p>Проверяем покрытие смен, интервалы отдыха, рабочие блоки и обязательные выходные.</p>
                 </div>
@@ -787,7 +787,7 @@ export default function Home() {
             </div>
 
             <SheetFooter className="sheet-footer-custom">
-              {calculating ? <><Button variant="outline" disabled>Отмена</Button><Button className="calculate-button" disabled><Spinner />Идёт расчёт…</Button></> : options.length ? <><Button variant="outline" onClick={() => { setOptions([]); setPreviewSchedule(null); }}>Назад</Button><Button className="calculate-button" onClick={applySelectedOption}>Применить вариант</Button></> : <><Button variant="outline" onClick={closeWorkflow}>Отмена</Button>{!calculationError && <Button className="calculate-button" onClick={calculateOptions} disabled={workflow === "replace" && !replacement}>{workflow === "remove" ? "Рассчитать варианты" : "Проверить замену"}</Button>}</>}
+              {calculating ? <><Button variant="outline" disabled>Отмена</Button><Button className="calculate-button" disabled><Loader2 className="animate-spin" aria-hidden="true" />Идёт расчёт…</Button></> : options.length ? <><Button variant="outline" onClick={() => { setOptions([]); setPreviewSchedule(null); }}>Назад</Button><Button className="calculate-button" onClick={applySelectedOption}>Применить вариант</Button></> : <><Button variant="outline" onClick={closeWorkflow}>Отмена</Button>{!calculationError && <Button className="calculate-button" onClick={calculateOptions} disabled={workflow === "replace" && !replacement}>{workflow === "remove" ? "Рассчитать варианты" : "Проверить замену"}</Button>}</>}
             </SheetFooter>
           </SheetContent>
         </Sheet>
