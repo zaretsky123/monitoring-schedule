@@ -206,14 +206,22 @@ function NavButton({ label, icon: Icon, active, expanded }: {
   active?: boolean;
   expanded: boolean;
 }) {
+  const comingSoon = !active;
   const button = (
-    <button type="button" className={cn("nav-button", active && "nav-button-active")} aria-current={active ? "page" : undefined}>
+    <button
+      type="button"
+      className={cn("nav-button", active && "nav-button-active", comingSoon && "nav-button-coming")}
+      aria-current={active ? "page" : undefined}
+      aria-disabled={comingSoon || undefined}
+      title={comingSoon ? `${label} — будет позже` : undefined}
+    >
       <Icon className="size-[19px]" />
-      {expanded && <span>{label}</span>}
+      {expanded && <span className="nav-label">{label}</span>}
+      {expanded && comingSoon && <small className="nav-coming-label">Будет позже</small>}
     </button>
   );
   if (expanded) return button;
-  return <Tooltip><TooltipTrigger asChild>{button}</TooltipTrigger><TooltipContent side="right" sideOffset={10}>{label}</TooltipContent></Tooltip>;
+  return <Tooltip><TooltipTrigger asChild>{button}</TooltipTrigger><TooltipContent side="right" sideOffset={10}>{label}{comingSoon && " · Будет позже"}</TooltipContent></Tooltip>;
 }
 
 export default function Home() {
@@ -533,11 +541,11 @@ export default function Home() {
           <header className="topbar">
             <div className="topbar-heading"><h1>График работы</h1><span className={cn("coverage-status", !currentValidation.valid && "coverage-error")}><span className="status-dot" />{previewSchedule ? "Предпросмотр варианта" : currentValidation.valid ? "Все требования выполнены" : `${currentValidation.issues.length} нарушений`}</span></div>
             <div className="topbar-actions">
-              <Button variant="outline" size="icon" aria-label="Предыдущий месяц"><ChevronLeft /></Button>
-              <button type="button" className="month-button"><CalendarDays />Октябрь 2026</button>
-              <Button variant="outline" size="icon" aria-label="Следующий месяц"><ChevronRight /></Button>
+              <Button variant="outline" size="icon" className="coming-icon-button" aria-disabled="true" aria-label="Предыдущий месяц — будет позже" title="Будет позже"><ChevronLeft /></Button>
+              <button type="button" className="month-button month-button-coming" aria-disabled="true" title="Выбор месяца будет позже"><CalendarDays />Октябрь 2026<small>Будет позже</small></button>
+              <Button variant="outline" size="icon" className="coming-icon-button" aria-disabled="true" aria-label="Следующий месяц — будет позже" title="Будет позже"><ChevronRight /></Button>
               <Button className="export-button" onClick={exportExcel}><Download />Скачать Excel</Button>
-              <button type="button" className="profile-button" aria-label="Профиль пользователя">А</button>
+              <button type="button" className="profile-button coming-icon-button" aria-disabled="true" aria-label="Профиль пользователя — будет позже" title="Будет позже">А</button>
             </div>
           </header>
 
@@ -583,7 +591,7 @@ export default function Home() {
                     ];
                   })}
 
-                  <div className="sticky-name add-employee-row" aria-disabled="true"><span className="add-icon"><Plus /></span>Добавить сотрудника</div>
+                  <div className="sticky-name add-employee-row" aria-disabled="true"><span className="add-icon"><Plus /></span><span>Добавить сотрудника</span><small>Будет позже</small></div>
                   {days.map((day) => <div key={`add-${day}`} className="add-row-cell" />)}
                 </div>
               </div>
@@ -611,8 +619,8 @@ export default function Home() {
                 <div className="action-list">
                   <button type="button" onClick={() => openEmployeeAbsence(selectedEmployee)}><UserX /><span><strong>Указать недоступность</strong><small>Один день, рабочий блок или период</small></span><ChevronRight /></button>
                   <button type="button" onClick={() => { setFocusPerson(selectedEmployee); setEmployeeOpen(false); }}><Eye /><span><strong>Показать только его график</strong><small>Остальные дорожки будут приглушены</small></span><ChevronRight /></button>
-                  <button type="button"><History /><span><strong>История изменений</strong><small>{historyCount ? `Применено изменений: ${historyCount}` : "Изменений пока нет"}</small></span><ChevronRight /></button>
-                  <button type="button"><LockKeyhole /><span><strong>Закрепить смены</strong><small>Запретить автоматическую перестановку</small></span><ChevronRight /></button>
+                  <button type="button" className="action-coming-soon" aria-disabled="true" title="Будет позже"><History /><span><strong>История изменений</strong><small>{historyCount ? `Применено изменений: ${historyCount}` : "Изменений пока нет"}</small><em>Будет позже</em></span><ChevronRight /></button>
+                  <button type="button" className="action-coming-soon" aria-disabled="true" title="Будет позже"><LockKeyhole /><span><strong>Закрепить смены</strong><small>Запретить автоматическую перестановку</small><em>Будет позже</em></span><ChevronRight /></button>
                 </div>
               </div>
             </>}
