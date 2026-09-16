@@ -856,7 +856,6 @@ export default function Home() {
   const gridStyle = { gridTemplateColumns: `${NAME_WIDTH}px repeat(31, ${DAY_WIDTH}px)` };
   const selectedStats = selectedEmployee ? personStats(selectedEmployee, displaySchedule) : null;
   const selectedChange = selectedChangeId === null ? null : changeEvents.find((change) => change.id === selectedChangeId) ?? null;
-  const rollbackChangeEvent = rollbackConfirmId === null ? null : changeEvents.find((change) => change.id === rollbackConfirmId) ?? null;
   const changeMarkers = useMemo(() => {
     const previousPositions: number[] = [];
     return changeEvents.map((change) => {
@@ -986,7 +985,7 @@ export default function Home() {
           </SheetContent>
         </Sheet>
 
-        <Sheet open={Boolean(selectedChange)} onOpenChange={(open) => !open && setSelectedChangeId(null)}>
+        <Sheet open={Boolean(selectedChange)} onOpenChange={(open) => { if (!open) { setSelectedChangeId(null); setRollbackConfirmId(null); } }}>
           <SheetContent className="change-sheet sm:max-w-[440px]">
             {selectedChange && <>
               <SheetHeader className="sheet-header-custom"><div className="sheet-avatar change-sheet-avatar"><History /></div><SheetTitle className="text-xl">Изменение {selectedChange.id}</SheetTitle><SheetDescription>{changeStartLabel(selectedChange.start)} · применён вариант {selectedChange.optionNumber}</SheetDescription></SheetHeader>
@@ -1003,8 +1002,9 @@ export default function Home() {
                 </div>
                 <div className="change-sheet-note"><Eye /><span>Все смены, относящиеся к этому пакету, подсвечены в таблице.</span></div>
                 {changeEvents.filter((change) => change.id > selectedChange.id).length > 0 && <div className="rollback-warning"><TriangleAlert /><span>При откате также будут отменены все более поздние изменения: {changeEvents.filter((change) => change.id > selectedChange.id).map((change) => `№${change.id}`).join(", ")}.</span></div>}
+                {rollbackConfirmId === selectedChange.id && <div className="rollback-inline-confirm"><strong>Подтвердите откат</strong>График вернётся к состоянию до изменения {selectedChange.id}.{changeEvents.some((change) => change.id > selectedChange.id) ? " Более поздние изменения также будут отменены." : ""}</div>}
               </div>
-              <SheetFooter className="sheet-footer-custom"><Button variant="destructive" onClick={() => setRollbackConfirmId(selectedChange.id)}><RotateCcw />Откатить изменение</Button></SheetFooter>
+              <SheetFooter className="sheet-footer-custom">{rollbackConfirmId === selectedChange.id ? <><Button variant="outline" onClick={() => setRollbackConfirmId(null)}>Отмена</Button><Button variant="destructive" onClick={() => rollbackChange(selectedChange.id)}><RotateCcw />Подтвердить откат</Button></> : <Button variant="destructive" onClick={() => setRollbackConfirmId(selectedChange.id)}><RotateCcw />Откатить изменение</Button>}</SheetFooter>
             </>}
           </SheetContent>
         </Sheet>
@@ -1100,20 +1100,6 @@ export default function Home() {
             </SheetFooter>
           </SheetContent>
         </Sheet>
-
-        {rollbackChangeEvent && (
-          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setRollbackConfirmId(null)}>
-            <section className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="rollback-dialog-title" aria-describedby="rollback-dialog-description">
-              <span className="reset-dialog-icon"><TriangleAlert /></span>
-              <h2 id="rollback-dialog-title">Откатить изменение {rollbackChangeEvent.id}?</h2>
-              <p id="rollback-dialog-description">График вернётся к состоянию до этого изменения.{changeEvents.filter((change) => change.id > rollbackChangeEvent.id).length > 0 ? ` Вместе с ним будут отменены более поздние изменения: ${changeEvents.filter((change) => change.id > rollbackChangeEvent.id).map((change) => `№${change.id}`).join(", ")}.` : ""}</p>
-              <div className="reset-dialog-actions">
-                <Button variant="outline" autoFocus onClick={() => setRollbackConfirmId(null)}>Отмена</Button>
-                <Button variant="destructive" onClick={() => rollbackChange(rollbackChangeEvent.id)}><RotateCcw />Откатить</Button>
-              </div>
-            </section>
-          </div>
-        )}
 
         {resetConfirmOpen && (
           <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setResetConfirmOpen(false)}>
