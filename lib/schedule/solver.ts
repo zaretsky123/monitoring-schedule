@@ -1,35 +1,53 @@
-import { overlaps } from "./calendar";
+import { hoursBetween, overlaps } from "./calendar";
 import { countMonthlyOffPairs, describeWorkBlocks, validateSchedule } from "./validator";
 import type { Absence, Employee, Period, ScheduleOption, Shift } from "./types";
 
-function combinations<T>(items: T[], count: number, start = 0, prefix: T[] = [], result: T[][] = []): T[][] {
-  if (prefix.length === count) { result.push([...prefix]); return result; }
+function* combinations<T>(items: T[], count: number, start = 0, prefix: T[] = []): Generator<T[]> {
+  if (prefix.length === count) { yield [...prefix]; return; }
   for (let index = start; index <= items.length - (count - prefix.length); index += 1) {
     prefix.push(items[index]);
-    combinations(items, count, index + 1, prefix, result);
+    yield* combinations(items, count, index + 1, prefix);
     prefix.pop();
   }
-  return result;
+}
+
+function shiftsConflict(first: Shift, second: Shift) {
+  const [earlier, later] = first.start <= second.start ? [first, second] : [second, first];
+  return hoursBetween(earlier.end, later.start) < 12;
 }
 
 function enumerateAssignments(
   positions: Shift[],
   employees: Employee[],
+  schedule: Shift[],
+  absences: Absence[],
   requiredAssignments: Record<string, string>,
-  onAssignment: (assignment: Record<string, string>) => boolean | void,
+  shouldStop: () => boolean,
+  onVisit: () => void,
+  onAssignment: (assignment: Record<string, string>) => void,
   index = 0,
   current: Record<string, string> = {},
-): boolean {
-  if (index === positions.length) return Boolean(onAssignment({ ...current }));
+): void {
+  if (shouldStop()) return;
+  onVisit();
+  if (index === positions.length) { onAssignment({ ...current }); return; }
   const shift = positions[index];
   const required = requiredAssignments[shift.id];
-  const choices = required ? employees.filter((employee) => employee.id === required) : employees.filter((employee) => employee.active && employee.id !== shift.employeeId);
+  const mutableIds = new Set(positions.map((position) => position.id));
+  const choices = employees.filter((employee) => {
+    if (!employee.active) return false;
+    if (required ? employee.id !== required : employee.id === shift.employeeId) return false;
+    if (absences.some((absence) => absence.employeeId === employee.id && overlaps(shift.start, shift.end, absence.start, absence.end))) return false;
+    const fixedConflict = schedule.some((other) => !mutableIds.has(other.id) && other.employeeId === employee.id && shiftsConflict(shift, other));
+    if (fixedConflict) return false;
+    return positions.slice(0, index).some((other) => current[other.id] === employee.id && shiftsConflict(shift, other)) === false;
+  });
   for (const employee of choices) {
     current[shift.id] = employee.id;
-    if (enumerateAssignments(positions, employees, requiredAssignments, onAssignment, index + 1, current)) return true;
+    enumerateAssignments(positions, employees, schedule, absences, requiredAssignments, shouldStop, onVisit, onAssignment, index + 1, current);
+    if (shouldStop()) break;
   }
   delete current[shift.id];
-  return false;
 }
 
 function applyAssignments(schedule: Shift[], assignments: Record<string, string>) {
@@ -70,17 +88,25 @@ function buildMetrics(schedule: Shift[], employees: Employee[], period: Period) 
     hours,
     maxPositiveOverload: Math.max(0, ...deltas),
     loadSpread: Math.max(...deltas) - Math.min(...deltas),
+    totalLoadDeviation: deltas.reduce((sum, delta) => sum + Math.abs(delta), 0),
     changeSpanHours: (lastChangedAt - firstChangedAt) / 3_600_000,
   };
 }
 
 function compareOptions(a: ScheduleOption, b: ScheduleOption) {
-  return a.metrics.changedCount - b.metrics.changedCount || a.metrics.maxPositiveOverload - b.metrics.maxPositiveOverload || a.metrics.loadSpread - b.metrics.loadSpread || a.metrics.affectedEmployeeCount - b.metrics.affectedEmployeeCount || a.metrics.changeSpanHours - b.metrics.changeSpanHours || a.key.localeCompare(b.key);
+  return a.metrics.changedCount - b.metrics.changedCount || a.metrics.maxPositiveOverload - b.metrics.maxPositiveOverload || a.metrics.loadSpread - b.metrics.loadSpread || a.metrics.totalLoadDeviation - b.metrics.totalLoadDeviation || a.metrics.affectedEmployeeCount - b.metrics.affectedEmployeeCount || a.metrics.changeSpanHours - b.metrics.changeSpanHours || a.key.localeCompare(b.key);
 }
 
 function createOption(schedule: Shift[], employees: Employee[], period: Period): ScheduleOption {
   const metrics = buildMetrics(schedule, employees, period);
   return { key: metrics.changes.map((item) => `${item.shiftId}:${item.toEmployeeId}`).join("|"), schedule, metrics };
+}
+
+function keepBestOption(options: ScheduleOption[], option: ScheduleOption, limit: number) {
+  if (options.some((item) => item.key === option.key)) return;
+  options.push(option);
+  options.sort(compareOptions);
+  if (options.length > limit) options.pop();
 }
 
 export function solveSchedule({
@@ -90,8 +116,9 @@ export function solveSchedule({
   absences,
   recalculationStart,
   requiredAssignments = {},
-  maxExtraChanges = 2,
+  maxExtraChanges,
   maxOptions = 3,
+  maxEvaluatedAssignments = 300_000,
 }: {
   schedule: Shift[];
   employees: Employee[];
@@ -101,6 +128,7 @@ export function solveSchedule({
   requiredAssignments?: Record<string, string>;
   maxExtraChanges?: number;
   maxOptions?: number;
+  maxEvaluatedAssignments?: number;
 }) {
   const baseline = schedule.map((shift) => ({ ...shift, baseEmployeeId: shift.employeeId }));
   const affectedOriginalShifts = baseline.filter((shift) =>
@@ -114,38 +142,49 @@ export function solveSchedule({
   const optional = mutable.filter((shift) => !mandatoryIds.has(shift.id));
   const validByChangeCount = new Map<number, ScheduleOption[]>();
   const minimumRequired = mandatoryIds.size;
-  const maximumChanges = minimumRequired + maxExtraChanges;
+  const extraLimit = maxExtraChanges === undefined ? optional.length : Math.min(maxExtraChanges, optional.length);
+  const maximumChanges = minimumRequired + extraLimit;
+  let evaluatedAssignments = 0;
+  let searchLimitReached = false;
 
   for (let changeCount = minimumRequired; changeCount <= maximumChanges; changeCount += 1) {
     const extraCount = changeCount - minimumRequired;
-    const positionSets = combinations(optional, extraCount);
     const candidates: ScheduleOption[] = [];
-    for (const extras of positionSets) {
+    for (const extras of combinations(optional, extraCount)) {
       const positions = [...affectedOriginalShifts, ...extras].sort((a, b) => a.start.getTime() - b.start.getTime());
-      const shouldStop = enumerateAssignments(positions, employees, requiredAssignments, (assignments) => {
+      enumerateAssignments(positions, employees, baseline, absences, requiredAssignments, () => evaluatedAssignments >= maxEvaluatedAssignments, () => {
+        evaluatedAssignments += 1;
+      }, (assignments) => {
         const candidateSchedule = applyAssignments(baseline, assignments);
         const validation = validateSchedule({ schedule: candidateSchedule, employees, period, absences });
-        if (!validation.valid) return false;
+        if (!validation.valid) return;
         const option = createOption(candidateSchedule, employees, period);
-        if (!candidates.some((item) => item.key === option.key)) candidates.push(option);
-        return candidates.length >= 80;
+        keepBestOption(candidates, option, maxOptions);
       });
-      if (shouldStop || candidates.length >= 80) break;
+      if (evaluatedAssignments >= maxEvaluatedAssignments) {
+        searchLimitReached = true;
+        break;
+      }
     }
+    if (searchLimitReached) break;
     if (candidates.length) {
-      candidates.sort(compareOptions);
       validByChangeCount.set(changeCount, candidates);
-      if (validByChangeCount.size >= 2) break;
+      const optionCount = [...validByChangeCount.values()].reduce((sum, items) => sum + items.length, 0);
+      if (optionCount >= maxOptions) break;
     }
   }
 
-  if (!validByChangeCount.size) return { found: false as const, options: [], reason: `В пределах ${maxExtraChanges} дополнительных перестановок допустимый график не найден` };
+  if (!validByChangeCount.size) {
+    const reason = searchLimitReached
+      ? "Поиск достиг безопасного вычислительного лимита. Система не будет ошибочно утверждать, что решения нет — требуется расширенный расчёт."
+      : maxExtraChanges !== undefined && extraLimit < optional.length
+        ? `В пределах ${extraLimit} дополнительных перестановок допустимый график не найден`
+        : "Допустимый график не существует даже после проверки всех доступных будущих перестановок";
+    return { found: false as const, options: [], reason };
+  }
   const counts = [...validByChangeCount.keys()].sort((a, b) => a - b);
   const minimumChangeCount = counts[0];
-  const minimumOption = validByChangeCount.get(minimumChangeCount)![0];
-  let recommended = minimumOption;
-  const nextOptions = validByChangeCount.get(minimumChangeCount + 1) ?? [];
-  if (nextOptions.length && minimumOption.metrics.maxPositiveOverload - nextOptions[0].metrics.maxPositiveOverload >= 12) recommended = nextOptions[0];
+  const recommended = validByChangeCount.get(minimumChangeCount)![0];
   const ordered = [recommended];
   for (const count of counts) for (const option of validByChangeCount.get(count)!) if (!ordered.some((item) => item.key === option.key)) ordered.push(option);
   return { found: true as const, minimumChangeCount, recommendedKey: recommended.key, options: ordered.slice(0, maxOptions) };
