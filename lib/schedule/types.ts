@@ -60,6 +60,7 @@ export type ScheduleOption = {
     hours: Record<string, EmployeeMetrics>;
     maxPositiveOverload: number;
     loadSpread: number;
+    totalLoadDeviation: number;
     changeSpanHours: number;
   };
 };
