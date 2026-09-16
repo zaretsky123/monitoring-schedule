@@ -181,7 +181,6 @@ type WorkerRequest = {
   absences: Absence[];
   recalculationStart: Date;
   requiredAssignments: Record<string, string>;
-  maxExtraChanges: number;
   maxOptions: number;
 };
 
@@ -703,7 +702,6 @@ export default function Home() {
         absences: mergeAbsences(activeAbsences, [absence]),
         recalculationStart: target.start,
         requiredAssignments,
-        maxExtraChanges: 2,
         maxOptions: 3,
       });
 
