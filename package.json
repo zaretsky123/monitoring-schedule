@@ -6,9 +6,10 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "build:pages": "next build",
+    "worker:build": "node scripts/build-worker.mjs",
+    "dev": "pnpm worker:build && next dev",
+    "build": "pnpm worker:build && next build",
+    "build:pages": "pnpm worker:build && next build",
     "start": "next start"
   },
   "dependencies": {

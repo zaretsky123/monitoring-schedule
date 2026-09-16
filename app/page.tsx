@@ -70,9 +70,8 @@ import {
   EMPLOYEES,
   octoberPeriod,
 } from "@/lib/schedule/sample";
-import { solveSchedule } from "@/lib/schedule/solver";
 import { countMonthlyFullOffDays, countMonthlyOffPairs, findWorkBlock, validateSchedule } from "@/lib/schedule/validator";
-import type { Absence, ScheduleOption, Shift } from "@/lib/schedule/types";
+import type { Absence, Employee, Period, ScheduleOption, Shift, ShiftChange } from "@/lib/schedule/types";
 
 const PEOPLE = ["ФИО 1", "ФИО 2", "ФИО 3", "ФИО 4"] as const;
 type Person = (typeof PEOPLE)[number];
@@ -140,10 +139,48 @@ const EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.
 const WEEKDAYS_RU = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 
 type PersistedSchedule = {
-  version: 1;
+  version: 1 | 2;
   historyCount: number;
   schedule: Array<Omit<Shift, "start" | "end"> & { start: string; end: string }>;
+  changeEvents?: PersistedChangeEvent[];
 };
+
+type AppliedChange = {
+  id: number;
+  start: Date;
+  appliedAt: Date;
+  triggerShiftId: string;
+  employeeId: string;
+  workflow: Exclude<Workflow, null>;
+  scope: string;
+  reason: string;
+  optionNumber: number;
+  changes: ShiftChange[];
+  beforeSchedule: Shift[];
+};
+
+type PersistedChangeEvent = Omit<AppliedChange, "start" | "appliedAt" | "beforeSchedule"> & {
+  start: string;
+  appliedAt: string;
+  beforeSchedule: PersistedSchedule["schedule"];
+};
+
+type PendingChange = Omit<AppliedChange, "id" | "appliedAt" | "optionNumber" | "changes" | "beforeSchedule">;
+
+type WorkerRequest = {
+  schedule: Shift[];
+  employees: Employee[];
+  period: Period;
+  absences: Absence[];
+  recalculationStart: Date;
+  requiredAssignments: Record<string, string>;
+  maxExtraChanges: number;
+  maxOptions: number;
+};
+
+type WorkerResult =
+  | { found: true; minimumChangeCount: number; recommendedKey: string; options: ScheduleOption[] }
+  | { found: false; options: []; reason: string };
 
 type ShiftSelection = {
   person: Person;
@@ -219,10 +256,57 @@ function signedHours(value: number) {
   return `${value > 0 ? "+" : ""}${value} ч`;
 }
 
+function runScheduleWorker(request: WorkerRequest) {
+  return new Promise<WorkerResult>((resolve, reject) => {
+    const workerUrl = new URL("workers/schedule-worker.js", document.baseURI);
+    const worker = new Worker(workerUrl, { type: "module" });
+    worker.onmessage = (event: MessageEvent<{ type: "result"; result: WorkerResult } | { type: "error"; message: string }>) => {
+      worker.terminate();
+      if (event.data.type === "error") reject(new Error(event.data.message));
+      else resolve(event.data.result);
+    };
+    worker.onerror = () => {
+      worker.terminate();
+      reject(new Error("Фоновый расчёт завершился с ошибкой"));
+    };
+    worker.postMessage(request);
+  });
+}
+
+function changeMarkerLeft(start: Date) {
+  if (start < octoberPeriod().start) return NAME_WIDTH;
+  if (start >= octoberPeriod().end) return NAME_WIDTH + 31 * DAY_WIDTH;
+  const dayIndex = start.getUTCDate() - 1;
+  const hour = start.getUTCHours();
+  const hourOffset = hour >= 20 ? 120 : hour >= 8 ? 34 : 0;
+  return NAME_WIDTH + dayIndex * DAY_WIDTH + hourOffset;
+}
+
+function reasonLabel(reason: string, workflow: Exclude<Workflow, null>) {
+  if (reason === "legacy") return "Ранее применённое изменение";
+  if (workflow === "replace") return "Ручная замена";
+  return ({ absence: "Неявка", sickday: "Sick day", medical: "Больничный", vacation: "Отпуск", other: "Другое" } as Record<string, string>)[reason] ?? "Отсутствие";
+}
+
+function scopeLabel(scope: string, workflow: Exclude<Workflow, null>) {
+  if (workflow === "replace") return "Одна выбранная смена";
+  return ({ shift: "Одна выбранная смена", block: "До конца рабочего блока", week: "7 календарных дней", custom: "Указанный период" } as Record<string, string>)[scope] ?? "Указанный период";
+}
+
 function changeDateLabel(shiftId: string) {
   const [date, type] = shiftId.split(":");
   const day = Number(date.slice(-2));
   return type === "D" ? `${day} октября, день` : `${day} октября, ночь`;
+}
+
+function changeStartLabel(date: Date) {
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "numeric",
+    month: "long",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+  }).format(date);
 }
 
 function NavButton({ label, icon: Icon, active, expanded }: {
@@ -258,6 +342,10 @@ export default function Home() {
   const [calculationError, setCalculationError] = useState("");
   const [calculating, setCalculating] = useState(false);
   const [historyCount, setHistoryCount] = useState(0);
+  const [changeEvents, setChangeEvents] = useState<AppliedChange[]>([]);
+  const [selectedChangeId, setSelectedChangeId] = useState<number | null>(null);
+  const [rollbackConfirmId, setRollbackConfirmId] = useState<number | null>(null);
+  const [pendingChange, setPendingChange] = useState<PendingChange | null>(null);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [hoveredPerson, setHoveredPerson] = useState<Person | null>(null);
   const [focusPerson, setFocusPerson] = useState<Person | null>(null);
@@ -300,7 +388,48 @@ export default function Home() {
           );
           if (datesAreValid) {
             setSchedule(restored);
-            setHistoryCount(Number.isInteger(persisted.historyCount) ? persisted.historyCount! : 0);
+            let restoredEvents = (persisted.changeEvents ?? []).flatMap((change) => {
+              if (!Array.isArray(change.beforeSchedule)) return [];
+              const beforeSchedule = change.beforeSchedule.map((shift) => ({
+                ...shift,
+                start: new Date(shift.start),
+                end: new Date(shift.end),
+              }));
+              const start = new Date(change.start);
+              const appliedAt = new Date(change.appliedAt);
+              const valid = !Number.isNaN(start.getTime()) && !Number.isNaN(appliedAt.getTime()) && beforeSchedule.every((shift) => !Number.isNaN(shift.start.getTime()) && !Number.isNaN(shift.end.getTime()));
+              return valid ? [{ ...change, start, appliedAt, beforeSchedule }] : [];
+            });
+            if (persisted.version === 1 && restoredEvents.length === 0) {
+              const original = createOctober2026Schedule();
+              const originalById = new Map(original.map((shift) => [shift.id, shift]));
+              const legacyChanges = restored
+                .filter((shift) => shift.start >= octoberPeriod().start && shift.start < octoberPeriod().end)
+                .flatMap((shift) => {
+                  const originalShift = originalById.get(shift.id);
+                  if (!originalShift || originalShift.employeeId === shift.employeeId) return [];
+                  return [{ shiftId: shift.id, type: shift.type, fromEmployeeId: originalShift.employeeId, toEmployeeId: shift.employeeId } satisfies ShiftChange];
+                });
+              const firstChangedShift = legacyChanges.length ? restored.find((shift) => shift.id === legacyChanges[0].shiftId) : undefined;
+              if (firstChangedShift) {
+                restoredEvents = [{
+                  id: 1,
+                  start: firstChangedShift.start,
+                  appliedAt: new Date(),
+                  triggerShiftId: firstChangedShift.id,
+                  employeeId: legacyChanges[0].fromEmployeeId,
+                  workflow: "remove",
+                  scope: "custom",
+                  reason: "legacy",
+                  optionNumber: 1,
+                  changes: legacyChanges,
+                  beforeSchedule: original,
+                }];
+              }
+            }
+            setChangeEvents(restoredEvents);
+            const persistedCount = persisted.version === 1 && restoredEvents.length ? 1 : Number.isInteger(persisted.historyCount) ? persisted.historyCount! : 0;
+            setHistoryCount(Math.max(persistedCount, ...restoredEvents.map((change) => change.id), 0));
           }
         }
       }
@@ -314,12 +443,22 @@ export default function Home() {
   useEffect(() => {
     if (!storageReady) return;
     const persisted: PersistedSchedule = {
-      version: 1,
+      version: 2,
       historyCount,
       schedule: schedule.map((shift) => ({
         ...shift,
         start: shift.start.toISOString(),
         end: shift.end.toISOString(),
+      })),
+      changeEvents: changeEvents.map((change) => ({
+        ...change,
+        start: change.start.toISOString(),
+        appliedAt: change.appliedAt.toISOString(),
+        beforeSchedule: change.beforeSchedule.map((shift) => ({
+          ...shift,
+          start: shift.start.toISOString(),
+          end: shift.end.toISOString(),
+        })),
       })),
     };
     try {
@@ -327,16 +466,19 @@ export default function Home() {
     } catch {
       // График продолжит работать в текущей вкладке, даже если хранилище браузера недоступно.
     }
-  }, [historyCount, schedule, storageReady]);
+  }, [changeEvents, historyCount, schedule, storageReady]);
 
   useEffect(() => {
-    if (!resetConfirmOpen) return;
+    if (!resetConfirmOpen && rollbackConfirmId === null) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setResetConfirmOpen(false);
+      if (event.key === "Escape") {
+        setResetConfirmOpen(false);
+        setRollbackConfirmId(null);
+      }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [resetConfirmOpen]);
+  }, [resetConfirmOpen, rollbackConfirmId]);
 
   function openWorkflow(shift: ShiftSelection, nextWorkflow: Exclude<Workflow, null>) {
     setSelectedShift(shift);
@@ -348,6 +490,7 @@ export default function Home() {
     setExpandedOptionKey("");
     setCalculationError("");
     setPreviewSchedule(null);
+    setPendingChange(null);
     const target = schedule.find((item) => item.id === shiftIdFor(shift.startDay, shift.kind));
     if (target) {
       setCustomStart(target.start.toISOString().slice(0, 16));
@@ -363,6 +506,7 @@ export default function Home() {
     setExpandedOptionKey("");
     setCalculationError("");
     setPreviewSchedule(null);
+    setPendingChange(null);
   }
 
   function openEmployeeAbsence(person: Person) {
@@ -378,6 +522,7 @@ export default function Home() {
     setExpandedOptionKey("");
     setCalculationError("");
     setPreviewSchedule(null);
+    setPendingChange(null);
   }
 
   useEffect(() => {
@@ -417,10 +562,11 @@ export default function Home() {
     const longLabel = kind === "day" ? `${startDay} октября, 08:00–20:00` : nightLabel(startDay);
     const scheduleShift = displaySchedule.find((item) => item.id === shiftIdFor(startDay, kind));
     const changed = Boolean(scheduleShift && scheduleShift.employeeId !== scheduleShift.plannedEmployeeId);
+    const highlightedByChange = Boolean(scheduleShift && selectedChangeId !== null && changeEvents.find((change) => change.id === selectedChangeId)?.changes.some((change) => change.shiftId === scheduleShift.id));
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" className={cn("shift-segment", kind === "day" ? "shift-day" : "shift-night", segment === "left" && "segment-left", segment === "right" && "segment-right", changed && "shift-changed")} aria-label={`${person}. ${kind === "day" ? "Дневная" : "Ночная"} смена: ${longLabel}`} title={longLabel}>
+          <button type="button" className={cn("shift-segment", kind === "day" ? "shift-day" : "shift-night", segment === "left" && "segment-left", segment === "right" && "segment-right", changed && "shift-changed", highlightedByChange && "shift-history-highlighted")} aria-label={`${person}. ${kind === "day" ? "Дневная" : "Ночная"} смена: ${longLabel}`} title={longLabel}>
             <span>{kind === "day" ? "Д" : "Н"}</span>
           </button>
         </DropdownMenuTrigger>
@@ -479,16 +625,19 @@ export default function Home() {
     const requiredAssignments = workflow === "replace" && replacement
       ? { [target.id]: employeeIdByName[replacement] }
       : {};
+    setPendingChange({
+      start: target.start,
+      triggerShiftId: target.id,
+      employeeId: target.employeeId,
+      workflow: workflow ?? "remove",
+      scope: workflow === "replace" ? "shift" : scope,
+      reason,
+    });
     setCalculationError("");
     setCalculating(true);
 
-    // Даём React отрисовать загрузку до запуска синхронного перебора вариантов.
-    await new Promise<void>((resolve) => {
-      window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
-    });
-
     try {
-      const result = solveSchedule({
+      const result = await runScheduleWorker({
         schedule,
         employees: EMPLOYEES,
         period: octoberPeriod(),
@@ -508,6 +657,10 @@ export default function Home() {
       setOptions(result.options);
       setSelectedOptionKey(result.recommendedKey);
       setPreviewSchedule(result.options[0].schedule);
+    } catch (error) {
+      setOptions([]);
+      setPreviewSchedule(null);
+      setCalculationError(error instanceof Error ? error.message : "Не удалось рассчитать варианты");
     } finally {
       setCalculating(false);
     }
@@ -520,10 +673,35 @@ export default function Home() {
 
   function applySelectedOption() {
     const option = options.find((item) => item.key === selectedOptionKey);
-    if (!option) return;
+    if (!option || !pendingChange) return;
+    const nextId = historyCount + 1;
+    const appliedChange: AppliedChange = {
+      ...pendingChange,
+      id: nextId,
+      appliedAt: new Date(),
+      optionNumber: options.findIndex((item) => item.key === option.key) + 1,
+      changes: option.metrics.changes,
+      beforeSchedule: schedule.map((shift) => ({ ...shift })),
+    };
     setSchedule(option.schedule.map(({ baseEmployeeId: _baseEmployeeId, ...shift }) => shift));
-    setHistoryCount((count) => count + 1);
+    setChangeEvents((events) => [...events, appliedChange]);
+    setHistoryCount(nextId);
     closeWorkflow();
+  }
+
+  function rollbackChange(changeId: number) {
+    const index = changeEvents.findIndex((change) => change.id === changeId);
+    if (index < 0) return;
+    const targetChange = changeEvents[index];
+    setSchedule(targetChange.beforeSchedule.map(({ baseEmployeeId: _baseEmployeeId, ...shift }) => ({ ...shift })));
+    setChangeEvents((events) => events.slice(0, index));
+    setHistoryCount(Math.max(0, targetChange.id - 1));
+    setPreviewSchedule(null);
+    setOptions([]);
+    setSelectedOptionKey("");
+    setExpandedOptionKey("");
+    setSelectedChangeId(null);
+    setRollbackConfirmId(null);
   }
 
   function resetToOriginalSchedule() {
@@ -534,6 +712,10 @@ export default function Home() {
     setExpandedOptionKey("");
     setCalculationError("");
     setHistoryCount(0);
+    setChangeEvents([]);
+    setSelectedChangeId(null);
+    setRollbackConfirmId(null);
+    setPendingChange(null);
     setWorkflow(null);
     setEmployeeOpen(false);
     setResetConfirmOpen(false);
@@ -673,6 +855,17 @@ export default function Home() {
 
   const gridStyle = { gridTemplateColumns: `${NAME_WIDTH}px repeat(31, ${DAY_WIDTH}px)` };
   const selectedStats = selectedEmployee ? personStats(selectedEmployee, displaySchedule) : null;
+  const selectedChange = selectedChangeId === null ? null : changeEvents.find((change) => change.id === selectedChangeId) ?? null;
+  const rollbackChangeEvent = rollbackConfirmId === null ? null : changeEvents.find((change) => change.id === rollbackConfirmId) ?? null;
+  const changeMarkers = useMemo(() => {
+    const previousPositions: number[] = [];
+    return changeEvents.map((change) => {
+      const left = changeMarkerLeft(change.start);
+      const lane = previousPositions.filter((position) => Math.abs(position - left) < 112).length % 2;
+      previousPositions.push(left);
+      return { change, left, lane };
+    });
+  }, [changeEvents]);
 
   return (
     <TooltipProvider>
@@ -717,7 +910,13 @@ export default function Home() {
               </div>
 
               <div className="schedule-scroll" tabIndex={0} aria-label="График за октябрь 2026">
-                <div className="schedule-grid" style={gridStyle}>
+                <div className={cn("schedule-grid", changeMarkers.length > 0 && "schedule-grid-with-markers")} style={gridStyle}>
+                  {changeMarkers.length > 0 && <div className="change-markers-layer" aria-label="Применённые изменения">
+                    {changeMarkers.map(({ change, left, lane }) => <div className={cn("change-marker", selectedChangeId === change.id && "change-marker-active")} style={{ left }} key={change.id}>
+                      <button type="button" className="change-marker-label" style={{ top: 4 + lane * 24 }} onClick={() => setSelectedChangeId(change.id)}>Изменение {change.id}</button>
+                      <span className="change-marker-line" />
+                    </div>)}
+                  </div>}
                   <div className="sticky-name header-name"><span>Сотрудники</span><span className="header-count">4</span></div>
                   {days.map((day) => { const info = dayInfo(day); return <div key={`date-${day}`} className={cn("date-header", info.weekend && "weekend-header")}><strong>{day}</strong><span>{info.weekday}</span></div>; })}
 
@@ -783,6 +982,29 @@ export default function Home() {
                   <button type="button" className="action-coming-soon" aria-disabled="true" title="Будет позже"><LockKeyhole /><span><strong>Закрепить смены</strong><small>Запретить автоматическую перестановку</small><em>Будет позже</em></span><ChevronRight /></button>
                 </div>
               </div>
+            </>}
+          </SheetContent>
+        </Sheet>
+
+        <Sheet open={Boolean(selectedChange)} onOpenChange={(open) => !open && setSelectedChangeId(null)}>
+          <SheetContent className="change-sheet sm:max-w-[440px]">
+            {selectedChange && <>
+              <SheetHeader className="sheet-header-custom"><div className="sheet-avatar change-sheet-avatar"><History /></div><SheetTitle className="text-xl">Изменение {selectedChange.id}</SheetTitle><SheetDescription>{changeStartLabel(selectedChange.start)} · применён вариант {selectedChange.optionNumber}</SheetDescription></SheetHeader>
+              <div className="sheet-body">
+                <div className="change-summary-card">
+                  <div><span>Причина</span><strong>{reasonLabel(selectedChange.reason, selectedChange.workflow)}</strong></div>
+                  <div><span>Сотрудник</span><strong>{employeeNameById[selectedChange.employeeId]}</strong></div>
+                  <div><span>Период</span><strong>{scopeLabel(selectedChange.scope, selectedChange.workflow)}</strong></div>
+                  <div><span>Перестановок</span><strong>{selectedChange.changes.length}</strong></div>
+                </div>
+                <h3 className="change-sheet-title">Перестановки в пакете</h3>
+                <div className="change-sheet-list">
+                  {selectedChange.changes.map((change) => <div key={change.shiftId}><span>{changeDateLabel(change.shiftId)}</span><strong>{employeeNameById[change.fromEmployeeId]} → {employeeNameById[change.toEmployeeId]}</strong></div>)}
+                </div>
+                <div className="change-sheet-note"><Eye /><span>Все смены, относящиеся к этому пакету, подсвечены в таблице.</span></div>
+                {changeEvents.filter((change) => change.id > selectedChange.id).length > 0 && <div className="rollback-warning"><TriangleAlert /><span>При откате также будут отменены все более поздние изменения: {changeEvents.filter((change) => change.id > selectedChange.id).map((change) => `№${change.id}`).join(", ")}.</span></div>}
+              </div>
+              <SheetFooter className="sheet-footer-custom"><Button variant="destructive" onClick={() => setRollbackConfirmId(selectedChange.id)}><RotateCcw />Откатить изменение</Button></SheetFooter>
             </>}
           </SheetContent>
         </Sheet>
@@ -878,6 +1100,20 @@ export default function Home() {
             </SheetFooter>
           </SheetContent>
         </Sheet>
+
+        {rollbackChangeEvent && (
+          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setRollbackConfirmId(null)}>
+            <section className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="rollback-dialog-title" aria-describedby="rollback-dialog-description">
+              <span className="reset-dialog-icon"><TriangleAlert /></span>
+              <h2 id="rollback-dialog-title">Откатить изменение {rollbackChangeEvent.id}?</h2>
+              <p id="rollback-dialog-description">График вернётся к состоянию до этого изменения.{changeEvents.filter((change) => change.id > rollbackChangeEvent.id).length > 0 ? ` Вместе с ним будут отменены более поздние изменения: ${changeEvents.filter((change) => change.id > rollbackChangeEvent.id).map((change) => `№${change.id}`).join(", ")}.` : ""}</p>
+              <div className="reset-dialog-actions">
+                <Button variant="outline" autoFocus onClick={() => setRollbackConfirmId(null)}>Отмена</Button>
+                <Button variant="destructive" onClick={() => rollbackChange(rollbackChangeEvent.id)}><RotateCcw />Откатить</Button>
+              </div>
+            </section>
+          </div>
+        )}
 
         {resetConfirmOpen && (
           <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setResetConfirmOpen(false)}>
