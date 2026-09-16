@@ -75,10 +75,19 @@ function hasWorkOnDay(shifts: Shift[], dayStart: Date, dayEnd: Date) {
   return shifts.some((shift) => overlaps(shift.start, shift.end, dayStart, dayEnd));
 }
 
-export function countMonthlyOffPairs(schedule: Shift[], employeeId: string, period: Period) {
+function monthlyFreeDays(schedule: Shift[], employeeId: string, period: Period) {
   const shifts = employeeShifts(schedule, employeeId);
   const freeDays: boolean[] = [];
   for (let day = period.start; day < period.end; day = addDays(day, 1)) freeDays.push(!hasWorkOnDay(shifts, day, addDays(day, 1)));
+  return freeDays;
+}
+
+export function countMonthlyFullOffDays(schedule: Shift[], employeeId: string, period: Period) {
+  return monthlyFreeDays(schedule, employeeId, period).filter(Boolean).length;
+}
+
+export function countMonthlyOffPairs(schedule: Shift[], employeeId: string, period: Period) {
+  const freeDays = monthlyFreeDays(schedule, employeeId, period);
   let pairs = 0;
   for (let index = 0; index < freeDays.length - 1;) {
     if (freeDays[index] && freeDays[index + 1]) { pairs += 1; index += 2; }

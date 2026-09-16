@@ -199,6 +199,7 @@ button { font: inherit; }
 .employee-stats span { margin-top: 4px; color: #8994a4; font-size: 11px; }
 .detail-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 2px; border-bottom: 1px solid #edf0f4; color: #69758a; font-size: 13px; }
 .detail-line strong { color: #344156; font-size: 13px; }
+.detail-line strong small { color: #8a95a5; font-size: 10px; font-weight: 500; }
 .action-list { display: flex; flex-direction: column; gap: 7px; margin-top: 22px; }
 .action-list button { min-height: 62px; display: grid; grid-template-columns: 23px 1fr 18px; align-items: center; gap: 11px; padding: 10px 12px; border: 1px solid #e4e9ef; border-radius: 11px; color: #506078; background: #fff; text-align: left; cursor: pointer; }
 .action-list button:hover { border-color: #c9ddee; background: #f7fbfe; }
@@ -253,7 +254,7 @@ button { font: inherit; }
 .employee-impact-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
 .employee-impact-grid > div { min-height: 70px; display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 9px 11px; border-right: 1px solid #edf1f5; border-bottom: 1px solid #edf1f5; }
 .employee-impact-grid > div:nth-child(2n) { border-right: 0; }
-.employee-impact-grid > div:last-child { grid-column: 1/-1; border-right: 0; border-bottom: 0; }
+.employee-impact-grid > div:nth-last-child(-n+2) { border-bottom: 0; }
 .employee-impact-grid span { color: #7b8798; font-size: 10px; }
 .employee-impact-grid strong { color: #334156; font-size: 12px; }
 .employee-impact-grid small { color: #98a2b1; font-size: 9px; }

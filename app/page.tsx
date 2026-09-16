@@ -71,7 +71,7 @@ import {
   octoberPeriod,
 } from "@/lib/schedule/sample";
 import { solveSchedule } from "@/lib/schedule/solver";
-import { countMonthlyOffPairs, findWorkBlock, validateSchedule } from "@/lib/schedule/validator";
+import { countMonthlyFullOffDays, countMonthlyOffPairs, findWorkBlock, validateSchedule } from "@/lib/schedule/validator";
 import type { Absence, ScheduleOption, Shift } from "@/lib/schedule/types";
 
 const PEOPLE = ["ФИО 1", "ФИО 2", "ФИО 3", "ФИО 4"] as const;
@@ -199,6 +199,7 @@ function personStats(person: Person, schedule: Shift[]) {
   const planned = schedule
     .filter((shift) => shift.plannedEmployeeId === employeeId)
     .reduce((sum, shift) => sum + overlapHours(shift), 0);
+  const fullOffDays = countMonthlyFullOffDays(schedule, employeeId, period);
   return {
     dayCount,
     nightCount,
@@ -208,7 +209,9 @@ function personStats(person: Person, schedule: Shift[]) {
     delta: hours - planned,
     restHours: periodHours - hours,
     plannedRestHours: periodHours - planned,
-    offPairs: countMonthlyOffPairs(schedule, employeeId, octoberPeriod()),
+    fullOffDays,
+    fullOffHours: fullOffDays * 24,
+    offPairs: countMonthlyOffPairs(schedule, employeeId, period),
   };
 }
 
@@ -768,7 +771,8 @@ export default function Home() {
               <SheetHeader className="sheet-header-custom"><div className="sheet-avatar"><UserRound /></div><SheetTitle className="text-xl">{selectedEmployee}</SheetTitle><SheetDescription>Показатели за октябрь 2026</SheetDescription></SheetHeader>
               <div className="sheet-body">
                 <div className="employee-stats"><div><strong>{selectedStats.total}</strong><span>смен</span></div><div><strong>{selectedStats.hours}</strong><span>часов</span></div><div><strong>{selectedStats.dayCount}</strong><span>дневных</span></div><div><strong>{selectedStats.nightCount}</strong><span>ночных</span></div></div>
-                <div className="detail-line"><span>Часы отдыха за месяц</span><strong>{selectedStats.restHours} часов</strong></div>
+                <div className="detail-line"><span>Часы полных выходных</span><strong>{selectedStats.fullOffHours} часов <small>({selectedStats.fullOffDays} дней)</small></strong></div>
+                <div className="detail-line"><span>Все свободные от смен часы</span><strong>{selectedStats.restHours} часов</strong></div>
                 <div className="detail-line"><span>Рабочие часы по плану</span><strong>{selectedStats.planned} часов</strong></div>
                 <div className="detail-line"><span>Отклонение от плана</span><strong>{selectedStats.delta > 0 ? "+" : ""}{selectedStats.delta} часов</strong></div>
                 <div className="detail-line"><span>Пар полных выходных</span><strong>{selectedStats.offPairs}</strong></div>
@@ -824,6 +828,7 @@ export default function Home() {
                                 const after = personStats(person, option.schedule);
                                 const workDelta = after.hours - before.hours;
                                 const restDelta = after.restHours - before.restHours;
+                                const fullOffDelta = after.fullOffHours - before.fullOffHours;
                                 const blocks = option.metrics.hours[employeeId]?.blocks ?? [];
                                 const maxBlock = blocks.reduce((maximum, block) => Math.max(maximum, block.length), 0);
                                 return (
@@ -834,7 +839,8 @@ export default function Home() {
                                     </div>
                                     <div className="employee-impact-grid">
                                       <div><span>Рабочие часы</span><strong>{before.hours} → {after.hours}</strong><small>за октябрь</small></div>
-                                      <div><span>Часы отдыха</span><strong>{before.restHours} → {after.restHours}</strong><small className={restDelta > 0 ? "rest-increase" : restDelta < 0 ? "rest-decrease" : "no-change"}>{signedHours(restDelta)}</small></div>
+                                      <div><span>Часы полных выходных</span><strong>{before.fullOffHours} → {after.fullOffHours}</strong><small className={fullOffDelta > 0 ? "rest-increase" : fullOffDelta < 0 ? "rest-decrease" : "no-change"}>{signedHours(fullOffDelta)} · {before.fullOffDays} → {after.fullOffDays} дней</small></div>
+                                      <div><span>Все свободные часы</span><strong>{before.restHours} → {after.restHours}</strong><small className={restDelta > 0 ? "rest-increase" : restDelta < 0 ? "rest-decrease" : "no-change"}>{signedHours(restDelta)}</small></div>
                                       <div><span>День / ночь</span><strong>{before.dayCount}/{before.nightCount} → {after.dayCount}/{after.nightCount}</strong><small>количество смен</small></div>
                                       <div><span>Всего смен</span><strong>{before.total} → {after.total}</strong><small>с началом в октябре</small></div>
                                       <div><span>Пары выходных</span><strong>{before.offPairs} → {after.offPairs}</strong><small>минимум 2</small></div>
