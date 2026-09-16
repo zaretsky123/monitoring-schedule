@@ -139,10 +139,15 @@ const EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.
 const WEEKDAYS_RU = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 
 type PersistedSchedule = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   historyCount: number;
   schedule: Array<Omit<Shift, "start" | "end"> & { start: string; end: string }>;
   changeEvents?: PersistedChangeEvent[];
+};
+
+type PersistedAbsence = Omit<Absence, "start" | "end"> & {
+  start: string;
+  end: string;
 };
 
 type AppliedChange = {
@@ -154,14 +159,16 @@ type AppliedChange = {
   workflow: Exclude<Workflow, null>;
   scope: string;
   reason: string;
+  absences: Absence[];
   optionNumber: number;
   changes: ShiftChange[];
   beforeSchedule: Shift[];
 };
 
-type PersistedChangeEvent = Omit<AppliedChange, "start" | "appliedAt" | "beforeSchedule"> & {
+type PersistedChangeEvent = Omit<AppliedChange, "start" | "appliedAt" | "absences" | "beforeSchedule"> & {
   start: string;
   appliedAt: string;
+  absences?: PersistedAbsence[];
   beforeSchedule: PersistedSchedule["schedule"];
 };
 
@@ -273,6 +280,37 @@ function runScheduleWorker(request: WorkerRequest) {
   });
 }
 
+function mergeAbsences(...groups: Absence[][]) {
+  const unique = new Map<string, Absence>();
+  for (const absence of groups.flat()) {
+    const key = `${absence.employeeId}|${absence.start.toISOString()}|${absence.end.toISOString()}`;
+    unique.set(key, absence);
+  }
+  return [...unique.values()];
+}
+
+function inferLegacyAbsence(change: PersistedChangeEvent, beforeSchedule: Shift[]): Absence[] {
+  if (change.reason === "legacy") return [];
+  const start = new Date(change.start);
+  const trigger = beforeSchedule.find((shift) => shift.id === change.triggerShiftId);
+  if (!trigger || Number.isNaN(start.getTime())) return [];
+
+  if (change.workflow === "replace" || change.scope === "shift") {
+    return [{ employeeId: change.employeeId, start, end: trigger.end }];
+  }
+  if (change.scope === "week") {
+    return [{ employeeId: change.employeeId, start, end: addDays(start, 7) }];
+  }
+  if (change.scope === "block") {
+    const block = findWorkBlock(beforeSchedule, change.employeeId, change.triggerShiftId);
+    const triggerIndex = block.findIndex((shift) => shift.id === change.triggerShiftId);
+    const remainingBlock = triggerIndex >= 0 ? block.slice(triggerIndex) : [];
+    const end = remainingBlock.at(-1)?.end;
+    return end ? [{ employeeId: change.employeeId, start, end }] : [];
+  }
+  return [];
+}
+
 function changeMarkerLeft(start: Date) {
   if (start < octoberPeriod().start) return NAME_WIDTH;
   if (start >= octoberPeriod().end) return NAME_WIDTH + 31 * DAY_WIDTH;
@@ -367,9 +405,13 @@ export default function Home() {
     () => schedule.some((shift) => shift.employeeId !== shift.plannedEmployeeId),
     [schedule],
   );
+  const activeAbsences = useMemo(
+    () => mergeAbsences(...changeEvents.map((change) => change.absences)),
+    [changeEvents],
+  );
   const currentValidation = useMemo(
-    () => validateSchedule({ schedule: displaySchedule, employees: EMPLOYEES, period: octoberPeriod() }),
-    [displaySchedule],
+    () => validateSchedule({ schedule: displaySchedule, employees: EMPLOYEES, period: octoberPeriod(), absences: activeAbsences }),
+    [activeAbsences, displaySchedule],
   );
 
   useEffect(() => {
@@ -377,7 +419,7 @@ export default function Home() {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const persisted = JSON.parse(raw) as Partial<PersistedSchedule>;
-        if (persisted.version === 1 && Array.isArray(persisted.schedule)) {
+        if ([1, 2, 3].includes(persisted.version ?? 0) && Array.isArray(persisted.schedule)) {
           const restored = persisted.schedule.map((shift) => ({
             ...shift,
             start: new Date(shift.start),
@@ -398,7 +440,17 @@ export default function Home() {
               const start = new Date(change.start);
               const appliedAt = new Date(change.appliedAt);
               const valid = !Number.isNaN(start.getTime()) && !Number.isNaN(appliedAt.getTime()) && beforeSchedule.every((shift) => !Number.isNaN(shift.start.getTime()) && !Number.isNaN(shift.end.getTime()));
-              return valid ? [{ ...change, start, appliedAt, beforeSchedule }] : [];
+              if (!valid) return [];
+              const restoredAbsences = Array.isArray(change.absences)
+                ? change.absences.flatMap((absence) => {
+                    const absenceStart = new Date(absence.start);
+                    const absenceEnd = new Date(absence.end);
+                    return !Number.isNaN(absenceStart.getTime()) && !Number.isNaN(absenceEnd.getTime()) && absenceStart < absenceEnd
+                      ? [{ employeeId: absence.employeeId, start: absenceStart, end: absenceEnd }]
+                      : [];
+                  })
+                : inferLegacyAbsence(change, beforeSchedule);
+              return [{ ...change, start, appliedAt, absences: restoredAbsences, beforeSchedule }];
             });
             if (persisted.version === 1 && restoredEvents.length === 0) {
               const original = createOctober2026Schedule();
@@ -421,6 +473,7 @@ export default function Home() {
                   workflow: "remove",
                   scope: "custom",
                   reason: "legacy",
+                  absences: [],
                   optionNumber: 1,
                   changes: legacyChanges,
                   beforeSchedule: original,
@@ -443,7 +496,7 @@ export default function Home() {
   useEffect(() => {
     if (!storageReady) return;
     const persisted: PersistedSchedule = {
-      version: 2,
+      version: 3,
       historyCount,
       schedule: schedule.map((shift) => ({
         ...shift,
@@ -454,6 +507,11 @@ export default function Home() {
         ...change,
         start: change.start.toISOString(),
         appliedAt: change.appliedAt.toISOString(),
+        absences: change.absences.map((absence) => ({
+          ...absence,
+          start: absence.start.toISOString(),
+          end: absence.end.toISOString(),
+        })),
         beforeSchedule: change.beforeSchedule.map((shift) => ({
           ...shift,
           start: shift.start.toISOString(),
@@ -632,6 +690,7 @@ export default function Home() {
       workflow: workflow ?? "remove",
       scope: workflow === "replace" ? "shift" : scope,
       reason,
+      absences: [absence],
     });
     setCalculationError("");
     setCalculating(true);
@@ -641,7 +700,7 @@ export default function Home() {
         schedule,
         employees: EMPLOYEES,
         period: octoberPeriod(),
-        absences: [absence],
+        absences: mergeAbsences(activeAbsences, [absence]),
         recalculationStart: target.start,
         requiredAssignments,
         maxExtraChanges: 2,
