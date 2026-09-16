@@ -245,6 +245,25 @@ button { font: inherit; }
 .change-line strong { color: #364358; font-size: 11px; }
 .change-line .positive-delta { color: #a86415; }
 .change-line .negative-delta { color: #32704a; }
+.employee-impact-list { display: flex; flex-direction: column; gap: 10px; }
+.employee-impact-card { overflow: hidden; border: 1px solid #e2e8ef; border-radius: 11px; background: #fff; }
+.employee-impact-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 11px; border-bottom: 1px solid #edf1f5; }
+.employee-impact-head > strong { color: #334156; font-size: 12px; }
+.employee-impact-head > span { padding: 4px 7px; border-radius: 6px; font-size: 10px; font-weight: 700; }
+.employee-impact-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
+.employee-impact-grid > div { min-height: 70px; display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 9px 11px; border-right: 1px solid #edf1f5; border-bottom: 1px solid #edf1f5; }
+.employee-impact-grid > div:nth-child(2n) { border-right: 0; }
+.employee-impact-grid > div:last-child { grid-column: 1/-1; border-right: 0; border-bottom: 0; }
+.employee-impact-grid span { color: #7b8798; font-size: 10px; }
+.employee-impact-grid strong { color: #334156; font-size: 12px; }
+.employee-impact-grid small { color: #98a2b1; font-size: 9px; }
+.employee-impact-grid .positive-delta { color: #a86415; }
+.employee-impact-grid .negative-delta { color: #32704a; }
+.work-increase,.rest-decrease { color: #9a5b11; background: #fff3df; }
+.work-decrease,.rest-increase { color: #32704a; background: #edf8f1; }
+.no-change { color: #647184; background: #eef2f6; }
+.employee-impact-grid small.rest-increase { color: #32704a; }
+.employee-impact-grid small.rest-decrease { color: #a86415; }
 .checks-box { display: flex; align-items: flex-start; gap: 8px; margin-top: 16px; padding: 10px; border-radius: 9px; color: #3b7351; background: #edf8f1; font-size: 11px; line-height: 1.45; }
 .checks-box svg { width: 16px; flex: 0 0 16px; margin-top: 1px; }
 .calculation-error { min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }

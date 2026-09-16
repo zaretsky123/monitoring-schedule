@@ -183,19 +183,37 @@ function shiftIdFor(startDay: number, kind: ShiftKind) {
 
 function personStats(person: Person, schedule: Shift[]) {
   const employeeId = employeeIdByName[person];
-  const monthly = schedule.filter((shift) => shift.start >= octoberPeriod().start && shift.start < octoberPeriod().end && shift.employeeId === employeeId);
+  const period = octoberPeriod();
+  const periodHours = (period.end.getTime() - period.start.getTime()) / 3_600_000;
+  const monthly = schedule.filter((shift) => shift.start >= period.start && shift.start < period.end && shift.employeeId === employeeId);
   const dayCount = monthly.filter((shift) => shift.type === "D").length;
   const nightCount = monthly.filter((shift) => shift.type === "N").length;
-  const planned = schedule.filter((shift) => shift.start >= octoberPeriod().start && shift.start < octoberPeriod().end && shift.plannedEmployeeId === employeeId).length * 12;
-  const hours = monthly.length * 12;
+  const overlapHours = (shift: Shift) => {
+    const start = Math.max(shift.start.getTime(), period.start.getTime());
+    const end = Math.min(shift.end.getTime(), period.end.getTime());
+    return Math.max(0, end - start) / 3_600_000;
+  };
+  const hours = schedule
+    .filter((shift) => shift.employeeId === employeeId)
+    .reduce((sum, shift) => sum + overlapHours(shift), 0);
+  const planned = schedule
+    .filter((shift) => shift.plannedEmployeeId === employeeId)
+    .reduce((sum, shift) => sum + overlapHours(shift), 0);
   return {
     dayCount,
     nightCount,
     total: monthly.length,
     hours,
+    planned,
     delta: hours - planned,
+    restHours: periodHours - hours,
+    plannedRestHours: periodHours - planned,
     offPairs: countMonthlyOffPairs(schedule, employeeId, octoberPeriod()),
   };
+}
+
+function signedHours(value: number) {
+  return `${value > 0 ? "+" : ""}${value} ч`;
 }
 
 function changeDateLabel(shiftId: string) {
@@ -750,6 +768,8 @@ export default function Home() {
               <SheetHeader className="sheet-header-custom"><div className="sheet-avatar"><UserRound /></div><SheetTitle className="text-xl">{selectedEmployee}</SheetTitle><SheetDescription>Показатели за октябрь 2026</SheetDescription></SheetHeader>
               <div className="sheet-body">
                 <div className="employee-stats"><div><strong>{selectedStats.total}</strong><span>смен</span></div><div><strong>{selectedStats.hours}</strong><span>часов</span></div><div><strong>{selectedStats.dayCount}</strong><span>дневных</span></div><div><strong>{selectedStats.nightCount}</strong><span>ночных</span></div></div>
+                <div className="detail-line"><span>Часы отдыха за месяц</span><strong>{selectedStats.restHours} часов</strong></div>
+                <div className="detail-line"><span>Рабочие часы по плану</span><strong>{selectedStats.planned} часов</strong></div>
                 <div className="detail-line"><span>Отклонение от плана</span><strong>{selectedStats.delta > 0 ? "+" : ""}{selectedStats.delta} часов</strong></div>
                 <div className="detail-line"><span>Пар полных выходных</span><strong>{selectedStats.offPairs}</strong></div>
                 <div className="action-list">
@@ -783,6 +803,8 @@ export default function Home() {
                   {options.map((option, index) => {
                     const selected = option.key === selectedOptionKey;
                     const expanded = option.key === expandedOptionKey;
+                    const affectedEmployeeIds = new Set(option.metrics.changes.flatMap((change) => [change.fromEmployeeId, change.toEmployeeId]));
+                    const affectedPeople = PEOPLE.filter((person) => affectedEmployeeIds.has(employeeIdByName[person]));
                     return (
                       <article key={option.key} className={cn("option-card", selected && "option-card-selected")}>
                         <button type="button" className="option-main" onClick={() => chooseOption(option)}>
@@ -794,8 +816,35 @@ export default function Home() {
                           <div className="option-details">
                             <h4>Перестановки</h4>
                             {option.metrics.changes.map((change) => <div className="change-line" key={change.shiftId}><span>{changeDateLabel(change.shiftId)}</span><strong>{employeeNameById[change.fromEmployeeId]} → {employeeNameById[change.toEmployeeId]}</strong></div>)}
-                            <h4>Отклонение от плана</h4>
-                            {Object.entries(option.metrics.hours).filter(([, metrics]) => metrics.delta !== 0).map(([employeeId, metrics]) => <div className="change-line" key={employeeId}><span>{employeeNameById[employeeId]}</span><strong className={metrics.delta > 0 ? "positive-delta" : "negative-delta"}>{metrics.delta > 0 ? "+" : ""}{metrics.delta} часов</strong></div>)}
+                            <h4>Влияние на сотрудников</h4>
+                            <div className="employee-impact-list">
+                              {affectedPeople.map((person) => {
+                                const employeeId = employeeIdByName[person];
+                                const before = personStats(person, schedule);
+                                const after = personStats(person, option.schedule);
+                                const workDelta = after.hours - before.hours;
+                                const restDelta = after.restHours - before.restHours;
+                                const blocks = option.metrics.hours[employeeId]?.blocks ?? [];
+                                const maxBlock = blocks.reduce((maximum, block) => Math.max(maximum, block.length), 0);
+                                return (
+                                  <div className="employee-impact-card" key={employeeId}>
+                                    <div className="employee-impact-head">
+                                      <strong>{person}</strong>
+                                      <span className={workDelta > 0 ? "work-increase" : workDelta < 0 ? "work-decrease" : "no-change"}>{signedHours(workDelta)} рабочих</span>
+                                    </div>
+                                    <div className="employee-impact-grid">
+                                      <div><span>Рабочие часы</span><strong>{before.hours} → {after.hours}</strong><small>за октябрь</small></div>
+                                      <div><span>Часы отдыха</span><strong>{before.restHours} → {after.restHours}</strong><small className={restDelta > 0 ? "rest-increase" : restDelta < 0 ? "rest-decrease" : "no-change"}>{signedHours(restDelta)}</small></div>
+                                      <div><span>День / ночь</span><strong>{before.dayCount}/{before.nightCount} → {after.dayCount}/{after.nightCount}</strong><small>количество смен</small></div>
+                                      <div><span>Всего смен</span><strong>{before.total} → {after.total}</strong><small>с началом в октябре</small></div>
+                                      <div><span>Пары выходных</span><strong>{before.offPairs} → {after.offPairs}</strong><small>минимум 2</small></div>
+                                      <div><span>Макс. рабочий блок</span><strong>{maxBlock} смен</strong><small>допустимо до 4</small></div>
+                                      <div><span>Отклонение от плана</span><strong className={after.delta > 0 ? "positive-delta" : after.delta < 0 ? "negative-delta" : "no-change"}>{signedHours(after.delta)}</strong><small>после перестановки</small></div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
                             <div className="checks-box"><CheckCircle2 /><span>Покрытие 24/7, отдых 12 часов, блоки до 4 смен, две пары выходных и 42 часа отдыха в неделю соблюдены.</span></div>
                           </div>
                         )}
