@@ -34,6 +34,25 @@ export function createOctober2026Schedule(): Shift[] {
   return shifts;
 }
 
+export function createBlankOctober2026Schedule(): Shift[] {
+  const octoberFirst = utcDate(2026, 10, 1);
+  const shifts: Shift[] = [];
+  for (let offset = -1; offset <= 30; offset += 1) {
+    const date = addDays(octoberFirst, offset);
+    if (offset >= 0) {
+      shifts.push({
+        id: `${dateKey(date)}:D`, type: "D", start: addHours(date, 8), end: addHours(date, 20),
+        plannedEmployeeId: "", employeeId: "",
+      });
+    }
+    shifts.push({
+      id: `${dateKey(date)}:N`, type: "N", start: addHours(date, 20), end: addHours(date, 32),
+      plannedEmployeeId: "", employeeId: "",
+    });
+  }
+  return shifts;
+}
+
 export function octoberPeriod() {
   return { year: 2026, month: 10, start: utcDate(2026, 10, 1), end: utcDate(2026, 11, 1) };
 }
