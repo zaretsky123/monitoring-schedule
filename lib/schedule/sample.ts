@@ -1,5 +1,5 @@
-import { addDays, addHours, dateKey, utcDate } from "./calendar";
-import type { Employee, Shift } from "./types";
+import { addDays, addHours, dateKey, daysInMonth, periodForMonth, utcDate } from "./calendar";
+import type { Employee, Period, Shift } from "./types";
 
 export const EMPLOYEES: Employee[] = [
   { id: "fio-1", name: "ФИО 1", active: true },
@@ -15,13 +15,20 @@ function mod(value: number, divisor: number) {
   return ((value % divisor) + divisor) % divisor;
 }
 
-export function createOctober2026Schedule(): Shift[] {
-  const octoberFirst = utcDate(2026, 10, 1);
+const PATTERN_ANCHOR = utcDate(2026, 10, 1);
+
+function patternOffset(date: Date) {
+  return Math.round((date.getTime() - PATTERN_ANCHOR.getTime()) / 86_400_000);
+}
+
+export function createPatternSchedule(period: Period): Shift[] {
+  const dayCount = daysInMonth(period.year, period.month);
   const shifts: Shift[] = [];
-  for (let offset = -7; offset <= 37; offset += 1) {
-    const date = addDays(octoberFirst, offset);
-    const dayEmployee = DAY_PATTERN[mod(offset, DAY_PATTERN.length)];
-    const nightEmployee = NIGHT_PATTERN[mod(offset, NIGHT_PATTERN.length)];
+  for (let offset = -7; offset <= dayCount + 6; offset += 1) {
+    const date = addDays(period.start, offset);
+    const cycleOffset = patternOffset(date);
+    const dayEmployee = DAY_PATTERN[mod(cycleOffset, DAY_PATTERN.length)];
+    const nightEmployee = NIGHT_PATTERN[mod(cycleOffset, NIGHT_PATTERN.length)];
     shifts.push({
       id: `${dateKey(date)}:D`, type: "D", start: addHours(date, 8), end: addHours(date, 20),
       plannedEmployeeId: dayEmployee, employeeId: dayEmployee,
@@ -34,11 +41,11 @@ export function createOctober2026Schedule(): Shift[] {
   return shifts;
 }
 
-export function createBlankOctober2026Schedule(): Shift[] {
-  const octoberFirst = utcDate(2026, 10, 1);
+export function createBlankMonthSchedule(period: Period, carryInEmployeeId = ""): Shift[] {
+  const dayCount = daysInMonth(period.year, period.month);
   const shifts: Shift[] = [];
-  for (let offset = -1; offset <= 30; offset += 1) {
-    const date = addDays(octoberFirst, offset);
+  for (let offset = -1; offset < dayCount; offset += 1) {
+    const date = addDays(period.start, offset);
     if (offset >= 0) {
       shifts.push({
         id: `${dateKey(date)}:D`, type: "D", start: addHours(date, 8), end: addHours(date, 20),
@@ -47,14 +54,22 @@ export function createBlankOctober2026Schedule(): Shift[] {
     }
     shifts.push({
       id: `${dateKey(date)}:N`, type: "N", start: addHours(date, 20), end: addHours(date, 32),
-      plannedEmployeeId: "", employeeId: "",
+      plannedEmployeeId: offset === -1 ? carryInEmployeeId : "", employeeId: offset === -1 ? carryInEmployeeId : "",
     });
   }
   return shifts;
 }
 
+export function createOctober2026Schedule(): Shift[] {
+  return createPatternSchedule(periodForMonth(2026, 10));
+}
+
+export function createBlankOctober2026Schedule(): Shift[] {
+  return createBlankMonthSchedule(periodForMonth(2026, 10));
+}
+
 export function octoberPeriod() {
-  return { year: 2026, month: 10, start: utcDate(2026, 10, 1), end: utcDate(2026, 11, 1) };
+  return periodForMonth(2026, 10);
 }
 
 export const employeeNameById = Object.fromEntries(EMPLOYEES.map((employee) => [employee.id, employee.name]));
