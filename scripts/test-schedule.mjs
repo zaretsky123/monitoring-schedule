@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { solveSchedule } from "../public/workers/solver.js";
+import { generateSchedule } from "../public/workers/generator.js";
 import { validateSchedule } from "../public/workers/validator.js";
 
 const employees = [1, 2, 3, 4].map((number) => ({
@@ -95,6 +96,35 @@ function assertNoAbsenceOverlap(schedule, absences) {
 const original = createSchedule();
 assert.equal(validateSchedule({ schedule: original, employees, period }).valid, true, "Исходный график должен быть допустимым");
 
+const generationSeedEnd = addHours(period.start, 8 * 24);
+const generationDraft = original
+  .filter((shift) => shift.start < period.end && shift.end > addHours(period.start, -24))
+  .map((shift) => shift.start >= generationSeedEnd && shift.start < period.end
+    ? { ...shift, employeeId: "", plannedEmployeeId: "" }
+    : { ...shift });
+for (const mode of ["pattern", "optimal"]) {
+  const generated = generateSchedule({ schedule: generationDraft, employees, period, seedDays: 8, mode, maxOptions: 2 });
+  assert.equal(generated.found, true, `${mode}: генератор должен продолжить корректные первые восемь дней`);
+  if (!generated.found) process.exit(1);
+  assert.equal(generated.options.length > 0, true, `${mode}: должен быть хотя бы один вариант`);
+  assert.equal(validateSchedule({ schedule: generated.options[0].schedule, employees, period }).valid, true, `${mode}: результат должен пройти полную проверку`);
+  const fixedSeedChanged = generated.options[0].schedule.some((shift) => {
+    const originalShift = original.find((item) => item.id === shift.id);
+    return shift.start >= period.start && shift.start < generationSeedEnd && shift.employeeId !== originalShift?.employeeId;
+  });
+  assert.equal(fixedSeedChanged, false, `${mode}: первые восемь дней должны оставаться неизменными`);
+}
+
+const incompleteSeed = generationDraft.map((shift) => shift.id === "2026-10-03:D" ? { ...shift, employeeId: "", plannedEmployeeId: "" } : shift);
+const incompleteGeneration = generateSchedule({ schedule: incompleteSeed, employees, period, seedDays: 8, mode: "pattern" });
+assert.equal(incompleteGeneration.found, false, "Расчёт не должен начинаться с незаполненной сменой до голубой линии");
+
+const invalidSeed = generationDraft.map((shift) => ["2026-10-03:D", "2026-10-03:N"].includes(shift.id)
+  ? { ...shift, employeeId: "fio-4", plannedEmployeeId: "fio-4" }
+  : shift);
+const invalidGeneration = generateSchedule({ schedule: invalidSeed, employees, period, seedDays: 8, mode: "pattern" });
+assert.equal(invalidGeneration.found, false, "Расчёт должен отклонить две смены подряд без отдыха в исходном фрагменте");
+
 const firstAbsence = absenceFor(original, "2026-10-14:N");
 const request = {
   schedule: original,
@@ -168,4 +198,4 @@ const novemberCarryIn = novemberBoundary.schedule.find((shift) => shift.id === o
 assert.ok(octoberCarryOut, "Октябрь должен содержать ночную смену, переходящую в ноябрь");
 assert.equal(novemberCarryIn?.employeeId, octoberCarryOut?.employeeId, "На границе месяцев должна сохраняться одна и та же ночная смена и сотрудник");
 
-console.log("Алгоритм и месяцы: 22 проверки пройдено.");
+console.log("Алгоритм, генератор и месяцы: 29 проверок пройдено.");
