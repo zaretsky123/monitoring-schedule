@@ -104,6 +104,11 @@ button { font: inherit; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
 .month-button { height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 13px; border: 1px solid #dce4ed; border-radius: 9px; color: #2d3a4f; background: #fff; font-weight: 600; cursor: pointer; }
 .month-button svg { width: 17px; color: #2a78b9; }
+.month-button small { margin-left: 2px; padding: 3px 5px; border-radius: 5px; color: #52718d; background: #edf5fc; font-size: 9px; line-height: 1; }
+.month-menu-content { min-width: 235px; }
+.month-menu-item { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.month-menu-item strong { color: #334155; font-size: 12px; }
+.month-menu-item small { color: #8491a2; font-size: 10px; }
 .month-button-coming { color: #7e8998; cursor: default; }
 .month-button-coming svg { color: #8ea1b3; }
 .month-button-coming small { margin-left: 2px; padding: 3px 5px; border-radius: 5px; color: #7f8a99; background: #edf1f5; font-size: 9px; line-height: 1; }
@@ -331,6 +336,10 @@ button { font: inherit; }
 .new-month-dialog-icon { color: #2775ae; background: #eaf4fc; }
 .reset-dialog h2 { margin: 16px 0 7px; color: #283548; font-size: 19px; letter-spacing: -.015em; }
 .reset-dialog p { margin: 0; color: #748095; font-size: 13px; line-height: 1.55; }
+.new-month-picker { display: grid; grid-template-columns: 1.35fr .85fr; gap: 9px; margin-top: 18px; }
+.new-month-picker label { display: flex; flex-direction: column; gap: 6px; color: #748095; font-size: 11px; font-weight: 600; }
+.new-month-picker select { width: 100%; height: 40px; padding: 0 34px 0 11px; border: 1px solid #dbe3ec; border-radius: 9px; color: #334155; background: #fff; font-size: 13px; outline: none; }
+.new-month-picker select:focus { border-color: #6ca9dc; box-shadow: 0 0 0 3px rgba(25,118,210,.1); }
 .new-month-details { display: grid; grid-template-columns: 1.3fr .7fr 1fr; gap: 8px; margin-top: 18px; }
 .new-month-details span { display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid #e4e9ef; border-radius: 9px; color: #8a96a6; background: #fafbfd; font-size: 10px; }
 .new-month-details strong { color: #374459; font-size: 12px; }
