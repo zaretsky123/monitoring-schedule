@@ -556,6 +556,7 @@ export default function Home() {
   const scheduleScrollRef = useRef<HTMLDivElement | null>(null);
   const initialQuarterScrollDone = useRef(false);
   const scrollActivationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const programmaticScrollTarget = useRef<number | null>(null);
   const initialNextMonth = addMonths(2026, 10, 1);
   const [newMonthYear, setNewMonthYear] = useState(String(initialNextMonth.year));
   const [newMonthNumber, setNewMonthNumber] = useState(String(initialNextMonth.month));
@@ -1025,7 +1026,8 @@ export default function Home() {
   function scrollToQuarterMonth(targetKey: string, behavior: ScrollBehavior = "smooth") {
     const target = quarterMonthStartIndex(targetKey);
     if (target < 0) return;
-    scheduleScrollRef.current?.scrollTo({ left: target * DAY_WIDTH, behavior });
+    programmaticScrollTarget.current = target * DAY_WIDTH;
+    scheduleScrollRef.current?.scrollTo({ left: programmaticScrollTarget.current, behavior });
     setViewMonthKey(targetKey);
   }
 
@@ -1039,12 +1041,17 @@ export default function Home() {
     const targetKey = quarterDays[todayIndex].monthKey;
     if (monthStore.months[targetKey] && targetKey !== selectedMonthKey) openStoredMonth(targetKey);
     setViewMonthKey(targetKey);
-    scheduleScrollRef.current?.scrollTo({ left: todayIndex * DAY_WIDTH, behavior: "smooth" });
+    programmaticScrollTarget.current = todayIndex * DAY_WIDTH;
+    scheduleScrollRef.current?.scrollTo({ left: programmaticScrollTarget.current, behavior: "smooth" });
   }
 
   function handleQuarterScroll() {
     const element = scheduleScrollRef.current;
     if (!element) return;
+    if (programmaticScrollTarget.current !== null) {
+      if (Math.abs(element.scrollLeft - programmaticScrollTarget.current) < 2) programmaticScrollTarget.current = null;
+      return;
+    }
     const visibleDayIndex = Math.min(quarterDayCount - 1, Math.max(0, Math.round(element.scrollLeft / DAY_WIDTH)));
     const nextViewKey = quarterDays[visibleDayIndex]?.monthKey;
     if (!nextViewKey || nextViewKey === viewMonthKey) return;
