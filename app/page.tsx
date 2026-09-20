@@ -413,8 +413,8 @@ function carryInAssignment(months: Record<string, PersistedSchedule>, year: numb
   const previous = addMonths(year, month, -1);
   const previousRecord = months[monthKey(previous.year, previous.month)];
   if (!previousRecord) return null;
-  const boundary = periodForMonth(year, month).start.toISOString();
-  const shift = previousRecord.schedule.find((item) => item.type === "N" && item.end === boundary);
+  const boundary = periodForMonth(year, month).start.getTime();
+  const shift = previousRecord.schedule.find((item) => item.type === "N" && new Date(item.start).getTime() < boundary && new Date(item.end).getTime() > boundary);
   if (!shift?.employeeId) return null;
   return { employeeId: shift.employeeId, plannedEmployeeId: shift.plannedEmployeeId || shift.employeeId };
 }
@@ -425,7 +425,7 @@ function synchronizeCarryIn<T extends { schedule: Shift[]; baselineSchedule: Shi
   assignment: { employeeId: string; plannedEmployeeId: string } | null,
 ) {
   if (!assignment) return record;
-  const isCarryIn = (shift: Shift) => shift.type === "N" && shift.start < period.start && shift.end.getTime() === period.start.getTime();
+  const isCarryIn = (shift: Shift) => shift.type === "N" && shift.start < period.start && shift.end > period.start;
   return {
     ...record,
     schedule: record.schedule.map((shift) => isCarryIn(shift) ? { ...shift, ...assignment } : shift),
