@@ -48,6 +48,33 @@ function createSchedule() {
   return schedule;
 }
 
+function createScheduleForMonth(year, month) {
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  const end = new Date(Date.UTC(year, month, 1));
+  const dayCount = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const anchor = Date.UTC(2026, 9, 1);
+  const schedule = [];
+  for (let offset = -7; offset <= dayCount + 6; offset += 1) {
+    const date = addHours(start, offset * 24);
+    const cycleOffset = Math.round((date.getTime() - anchor) / 86_400_000);
+    const dateKey = date.toISOString().slice(0, 10);
+    for (const [type, startHour, endHour, employeeId] of [
+      ["D", 8, 20, dayPattern[mod(cycleOffset, dayPattern.length)]],
+      ["N", 20, 32, nightPattern[mod(cycleOffset, nightPattern.length)]],
+    ]) {
+      schedule.push({
+        id: `${dateKey}:${type}`,
+        type,
+        start: addHours(date, startHour),
+        end: addHours(date, endHour),
+        employeeId,
+        plannedEmployeeId: employeeId,
+      });
+    }
+  }
+  return { schedule, period: { year, month, start, end }, dayCount };
+}
+
 function absenceFor(schedule, shiftId) {
   const shift = schedule.find((item) => item.id === shiftId);
   assert.ok(shift, `Смена ${shiftId} должна существовать`);
@@ -119,4 +146,19 @@ for (const option of combined.options) {
   );
 }
 
-console.log("Алгоритм: 8 проверок пройдено.");
+for (const [year, month, expectedDays] of [[2027, 2, 28], [2028, 2, 29], [2026, 11, 30], [2026, 12, 31]]) {
+  const sample = createScheduleForMonth(year, month);
+  assert.equal(sample.dayCount, expectedDays, `${year}-${month}: неверное количество дней`);
+  assert.equal(
+    sample.schedule.filter((shift) => shift.start >= sample.period.start && shift.start < sample.period.end).length,
+    expectedDays * 2,
+    `${year}-${month}: должно быть по две начинающиеся смены на день`,
+  );
+  assert.equal(
+    validateSchedule({ schedule: sample.schedule, employees, period: sample.period }).valid,
+    true,
+    `${year}-${month}: универсальный шаблон должен проходить обязательные проверки`,
+  );
+}
+
+console.log("Алгоритм и месяцы: 20 проверок пройдено.");
