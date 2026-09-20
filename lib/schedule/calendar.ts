@@ -44,3 +44,39 @@ export function fullCalendarDaysBetween(restStart: Date, restEnd: Date) {
 export function dateKey(date: Date) {
   return date.toISOString().slice(0, 10);
 }
+
+export function periodForMonth(year: number, month: number) {
+  return { year, month, start: utcDate(year, month, 1), end: utcDate(year, month + 1, 1) };
+}
+
+export function daysInMonth(year: number, month: number) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+export function monthKey(year: number, month: number) {
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+export function parseMonthKey(value: string) {
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  return Number.isInteger(year) && month >= 1 && month <= 12 ? { year, month } : null;
+}
+
+export function addMonths(year: number, month: number, amount: number) {
+  const date = new Date(Date.UTC(year, month - 1 + amount, 1));
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1 };
+}
+
+export function formatMonthLabel(year: number, month: number) {
+  const value = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric", timeZone: "UTC" })
+    .format(utcDate(year, month, 1));
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+export function formatMonthGenitive(year: number, month: number) {
+  return new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric", timeZone: "UTC" })
+    .format(utcDate(year, month, 1));
+}
