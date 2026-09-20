@@ -84,7 +84,7 @@ import {
 } from "@/lib/schedule/sample";
 import { lifecycleLabel, lifecycleStatus } from "@/lib/schedule/month";
 import { countMonthlyFullOffDays, countMonthlyOffPairs, findWorkBlock, validateSchedule } from "@/lib/schedule/validator";
-import type { Absence, Employee, Period, ScheduleOption, Shift, ShiftChange, StoredScheduleStatus } from "@/lib/schedule/types";
+import type { Absence, Employee, GeneratedScheduleOption, GenerationMode, Period, ScheduleOption, Shift, ShiftChange, StoredScheduleStatus } from "@/lib/schedule/types";
 
 const PEOPLE = ["ФИО 1", "ФИО 2", "ФИО 3", "ФИО 4"] as const;
 type Person = (typeof PEOPLE)[number];
@@ -113,6 +113,7 @@ const NAV_ITEMS = [
 
 const DAY_WIDTH = 154;
 const NAME_WIDTH = 196;
+const GENERATION_SEED_DAYS = 8;
 const LEGACY_STORAGE_KEY = "monitoring-schedule:october-2026:v1";
 const MONTHS_STORAGE_KEY = "monitoring-schedule:months:v1";
 const EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -163,7 +164,8 @@ type PersistedChangeEvent = Omit<AppliedChange, "start" | "appliedAt" | "absence
 
 type PendingChange = Omit<AppliedChange, "id" | "appliedAt" | "optionNumber" | "changes" | "beforeSchedule">;
 
-type WorkerRequest = {
+type RearrangeWorkerRequest = {
+  action?: "rearrange";
   schedule: Shift[];
   employees: Employee[];
   period: Period;
@@ -173,8 +175,24 @@ type WorkerRequest = {
   maxOptions: number;
 };
 
-type WorkerResult =
+type GenerationWorkerRequest = {
+  action: "generate";
+  schedule: Shift[];
+  employees: Employee[];
+  period: Period;
+  seedDays: number;
+  mode: GenerationMode;
+  maxOptions: number;
+};
+
+type WorkerRequest = RearrangeWorkerRequest | GenerationWorkerRequest;
+
+type RearrangeWorkerResult =
   | { found: true; minimumChangeCount: number; recommendedKey: string; options: ScheduleOption[] }
+  | { found: false; options: []; reason: string };
+
+type GenerationWorkerResult =
+  | { found: true; recommendedKey: string; options: GeneratedScheduleOption[] }
   | { found: false; options: []; reason: string };
 
 type ShiftSelection = {
@@ -259,14 +277,14 @@ function signedHours(value: number) {
   return `${value > 0 ? "+" : ""}${value} ч`;
 }
 
-function runScheduleWorker(request: WorkerRequest) {
-  return new Promise<WorkerResult>((resolve, reject) => {
+function runScheduleWorker<Result>(request: WorkerRequest) {
+  return new Promise<Result>((resolve, reject) => {
     const workerUrl = new URL("workers/schedule-worker.js", document.baseURI);
     const worker = new Worker(workerUrl, { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ type: "result"; result: WorkerResult } | { type: "error"; message: string }>) => {
+    worker.onmessage = (event: MessageEvent<{ type: "result"; result: unknown } | { type: "error"; message: string }>) => {
       worker.terminate();
       if (event.data.type === "error") reject(new Error(event.data.message));
-      else resolve(event.data.result);
+      else resolve(event.data.result as Result);
     };
     worker.onerror = () => {
       worker.terminate();
@@ -555,6 +573,13 @@ export default function Home() {
   const [newMonthConfirmOpen, setNewMonthConfirmOpen] = useState(false);
   const [cancelDraftConfirmOpen, setCancelDraftConfirmOpen] = useState(false);
   const [draftPublishError, setDraftPublishError] = useState("");
+  const [generatorOpen, setGeneratorOpen] = useState(false);
+  const [generationMode, setGenerationMode] = useState<GenerationMode>("pattern");
+  const [generating, setGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState("");
+  const [generationOptions, setGenerationOptions] = useState<GeneratedScheduleOption[]>([]);
+  const [selectedGenerationKey, setSelectedGenerationKey] = useState("");
+  const [generationPreview, setGenerationPreview] = useState<Shift[] | null>(null);
   const initialNextMonth = addMonths(2026, 10, 1);
   const [newMonthYear, setNewMonthYear] = useState(String(initialNextMonth.year));
   const [newMonthNumber, setNewMonthNumber] = useState(String(initialNextMonth.month));
@@ -565,7 +590,7 @@ export default function Home() {
   const monthLabel = formatMonthLabel(period.year, period.month);
   const monthGenitive = formatMonthGenitive(period.year, period.month);
   const currentLifecycle = lifecycleStatus(scheduleStatus, period);
-  const displaySchedule = previewSchedule ?? schedule;
+  const displaySchedule = previewSchedule ?? generationPreview ?? schedule;
   const contextualSchedule = useMemo(
     () => mergeAdjacentContext(displaySchedule, monthStore.months, selectedMonthKey, period),
     [displaySchedule, monthStore.months, period, selectedMonthKey],
@@ -765,6 +790,7 @@ export default function Home() {
 
   function renderDraftSlot(person: Person, kind: ShiftKind, startDay: number, segment: "left" | "center" | "right") {
     if (scheduleStatus !== "draft") return null;
+    if (startDay > GENERATION_SEED_DAYS && !draftGenerationStarted) return null;
     const target = schedule.find((shift) => shift.id === shiftIdFor(period, startDay, kind));
     if (!target || target.employeeId) return null;
     const employeeId = employeeIdByName[person];
@@ -834,7 +860,7 @@ export default function Home() {
     setCalculating(true);
 
     try {
-      const result = await runScheduleWorker({
+      const result = await runScheduleWorker<RearrangeWorkerResult>({
         schedule: mergeAdjacentContext(schedule, monthStore.months, selectedMonthKey, period),
         employees: EMPLOYEES,
         period,
@@ -912,6 +938,13 @@ export default function Home() {
     setWorkflow(null);
     setDraftPublishError("");
     setEmployeeOpen(false);
+    setGeneratorOpen(false);
+    setGenerationMode("pattern");
+    setGenerating(false);
+    setGenerationError("");
+    setGenerationOptions([]);
+    setSelectedGenerationKey("");
+    setGenerationPreview(null);
   }
 
   function saveMonthStore(next: PersistedMonthStore) {
@@ -1010,6 +1043,75 @@ export default function Home() {
       ? { ...shift, employeeId: "", plannedEmployeeId: "" }
       : shift));
     setDraftPublishError("");
+  }
+
+  function openGenerator() {
+    setGenerationMode("pattern");
+    setGenerationError("");
+    setGenerationOptions([]);
+    setSelectedGenerationKey("");
+    setGenerationPreview(null);
+    setGeneratorOpen(true);
+  }
+
+  function closeGenerator() {
+    if (generating) return;
+    setGeneratorOpen(false);
+    setGenerationError("");
+    setGenerationOptions([]);
+    setSelectedGenerationKey("");
+    setGenerationPreview(null);
+  }
+
+  async function calculateGeneratedSchedule() {
+    if (generating) return;
+    setGenerating(true);
+    setGenerationError("");
+    setGenerationOptions([]);
+    setSelectedGenerationKey("");
+    setGenerationPreview(null);
+    try {
+      const result = await runScheduleWorker<GenerationWorkerResult>({
+        action: "generate",
+        schedule: mergeAdjacentContext(schedule, monthStore.months, selectedMonthKey, period),
+        employees: EMPLOYEES,
+        period,
+        seedDays: GENERATION_SEED_DAYS,
+        mode: generationMode,
+        maxOptions: 3,
+      });
+      if (!result.found) {
+        setGenerationError(result.reason);
+        return;
+      }
+      setGenerationOptions(result.options);
+      setSelectedGenerationKey(result.recommendedKey);
+      setGenerationPreview(result.options[0].schedule);
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : "Не удалось продолжить график");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function chooseGenerationOption(option: GeneratedScheduleOption) {
+    setSelectedGenerationKey(option.key);
+    setGenerationPreview(option.schedule);
+  }
+
+  function applyGeneratedSchedule() {
+    const option = generationOptions.find((item) => item.key === selectedGenerationKey);
+    if (!option) return;
+    const currentShiftIds = new Set(schedule.map((shift) => shift.id));
+    setSchedule(option.schedule
+      .filter((shift) => currentShiftIds.has(shift.id))
+      .map(({ baseEmployeeId: _baseEmployeeId, ...shift }) => ({ ...shift, plannedEmployeeId: shift.employeeId })));
+    setDraftPublishError("");
+    setGeneratorOpen(false);
+    setGenerationError("");
+    setGenerationOptions([]);
+    setSelectedGenerationKey("");
+    setGenerationPreview(null);
   }
 
   function publishDraft() {
@@ -1221,6 +1323,14 @@ export default function Home() {
   const monthShifts = schedule.filter((shift) => shift.start >= period.start && shift.start < period.end);
   const assignedMonthShifts = monthShifts.filter((shift) => Boolean(shift.employeeId)).length;
   const boundaryShiftAssigned = schedule.some((shift) => shift.start < period.start && shift.end > period.start && Boolean(shift.employeeId));
+  const generationStart = addDays(period.start, GENERATION_SEED_DAYS);
+  const generationSeedShifts = monthShifts.filter((shift) => shift.start < generationStart);
+  const assignedGenerationSeedShifts = generationSeedShifts.filter((shift) => Boolean(shift.employeeId)).length;
+  const futureDraftShifts = monthShifts.filter((shift) => shift.start >= generationStart);
+  const assignedFutureDraftShifts = futureDraftShifts.filter((shift) => Boolean(shift.employeeId)).length;
+  const generationSeedReady = assignedGenerationSeedShifts === generationSeedShifts.length && boundaryShiftAssigned;
+  const draftGenerationStarted = assignedFutureDraftShifts > 0;
+  const generationBoundaryLeft = NAME_WIDTH + 1 + GENERATION_SEED_DAYS * (DAY_WIDTH + 1);
   const selectedStats = selectedEmployee ? personStats(selectedEmployee, displaySchedule, period) : null;
   const selectedChange = selectedChangeId === null ? null : changeEvents.find((change) => change.id === selectedChangeId) ?? null;
   const storedMonthKeys = Object.keys(monthStore.months).sort();
@@ -1301,13 +1411,17 @@ export default function Home() {
 
               {scheduleStatus === "draft" && (
                 <div className={cn("draft-progress", draftPublishError && "draft-progress-error")}>
-                  <div><WandSparkles /><span><strong>{assignedMonthShifts} из {monthShifts.length} смен месяца назначено</strong><small>{boundaryShiftAssigned ? "Граничная ночная смена также назначена" : "Назначьте ночную смену, входящую в первое число месяца"}</small></span></div>
-                  {draftPublishError && <p><TriangleAlert />{draftPublishError}</p>}
+                  <div><WandSparkles /><span><strong>{draftGenerationStarted ? `${assignedMonthShifts} из ${monthShifts.length} смен месяца назначено` : `Первые ${assignedGenerationSeedShifts} из ${generationSeedShifts.length} смен заполнены`}</strong><small>{!boundaryShiftAssigned ? "Назначьте ночную смену, входящую в первое число месяца" : draftGenerationStarted ? "Продолжение рассчитано — его можно корректировать вручную" : `Заполните 1–${GENERATION_SEED_DAYS} числа, затем продолжите график автоматически`}</small></span></div>
+                  <div className="draft-progress-actions">
+                    {draftPublishError && <p><TriangleAlert />{draftPublishError}</p>}
+                    <Button type="button" size="sm" onClick={openGenerator} disabled={!generationSeedReady || generating}><WandSparkles />{draftGenerationStarted ? "Пересчитать" : "Рассчитать продолжение"}</Button>
+                  </div>
                 </div>
               )}
 
               <div className="schedule-scroll" tabIndex={0} aria-label={`График за ${monthGenitive}`}>
                 <div className={cn("schedule-grid", changeMarkers.length > 0 && "schedule-grid-with-markers")} style={gridStyle}>
+                  {scheduleStatus === "draft" && <div className="generation-boundary" style={{ left: generationBoundaryLeft }} aria-label={`Граница ручного заполнения после ${GENERATION_SEED_DAYS} числа`}><span>Автозаполнение с {GENERATION_SEED_DAYS + 1} числа</span><i /></div>}
                   {changeMarkers.length > 0 && <div className="change-markers-layer" aria-label="Применённые изменения">
                     {changeMarkers.map(({ change, left, lane }) => <div className={cn("change-marker", selectedChangeId === change.id && "change-marker-active")} style={{ left }} key={change.id}>
                       <button type="button" className="change-marker-label" style={{ top: 4 + lane * 24 }} onClick={() => setSelectedChangeId(change.id)}>Изменение {change.id}</button>
@@ -1315,10 +1429,10 @@ export default function Home() {
                     </div>)}
                   </div>}
                   <div className="sticky-name header-name"><span>Сотрудники</span><span className="header-count">4</span></div>
-                  {days.map((day) => { const info = dayInfo(period, day); return <div key={`date-${day}`} className={cn("date-header", info.weekend && "weekend-header")}><strong>{day}</strong><span>{info.weekday}</span></div>; })}
+                  {days.map((day) => { const info = dayInfo(period, day); const locked = scheduleStatus === "draft" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview; return <div key={`date-${day}`} className={cn("date-header", info.weekend && "weekend-header", locked && "draft-future-locked")}><strong>{day}</strong><span>{info.weekday}</span></div>; })}
 
                   <div className="sticky-name time-name"><Clock3 />Время</div>
-                  {days.map((day) => { const info = dayInfo(period, day); return <div key={`time-${day}`} className={cn("time-cell", info.weekend && "weekend-cell")}><span>00–08</span><span>08–20</span><span>20–24</span></div>; })}
+                  {days.map((day) => { const info = dayInfo(period, day); const locked = scheduleStatus === "draft" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview; return <div key={`time-${day}`} className={cn("time-cell", info.weekend && "weekend-cell", locked && "draft-future-locked")}><span>00–08</span><span>08–20</span><span>20–24</span></div>; })}
 
                   {PEOPLE.map((person, personIndex) => {
                     const isFocusedOut = Boolean(focusPerson && focusPerson !== person);
@@ -1335,7 +1449,8 @@ export default function Home() {
                         const leftOwner = leftShift ? employeeNameById[leftShift.employeeId] : null;
                         const dayOwner = dayShift ? employeeNameById[dayShift.employeeId] : null;
                         const nightOwner = nightShift ? employeeNameById[nightShift.employeeId] : null;
-                        return <div key={`${person}-${day}`} className={cn("schedule-cell", info.weekend && "weekend-cell", isHighlighted && "cell-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)}>
+                        const locked = scheduleStatus === "draft" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview;
+                        return <div key={`${person}-${day}`} className={cn("schedule-cell", info.weekend && "weekend-cell", isHighlighted && "cell-highlighted", isFocusedOut && "row-muted", locked && "draft-future-locked")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)}>
                           <div className="segment-slot left-slot">{leftOwner === person ? renderShiftSegment(person, "night", day - 1, "left") : renderDraftSlot(person, "night", day - 1, "left")}</div>
                           <div className="segment-slot center-slot">{dayOwner === person ? renderShiftSegment(person, "day", day, "center") : renderDraftSlot(person, "day", day, "center")}</div>
                           <div className="segment-slot right-slot">{nightOwner === person ? renderShiftSegment(person, "night", day, "right") : renderDraftSlot(person, "night", day, "right")}</div>
@@ -1349,7 +1464,7 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="schedule-footer"><span><Menu />{scheduleStatus === "draft" ? "Назначайте пустые смены кнопками +; назначенную смену можно снять нажатием" : "Для действий нажмите на нужную смену"}</span><span>Таблица прокручивается по горизонтали</span></div>
+              <div className="schedule-footer"><span><Menu />{scheduleStatus === "draft" ? `Заполните первые ${GENERATION_SEED_DAYS} дней до голубой линии; рассчитанную часть можно изменить вручную` : "Для действий нажмите на нужную смену"}</span><span>Таблица прокручивается по горизонтали</span></div>
             </section>
 
             <section className="summary-grid" aria-label="Сводка графика">
@@ -1360,6 +1475,60 @@ export default function Home() {
             </section>
           </div>
         </main>
+
+        <Sheet open={generatorOpen} onOpenChange={(open) => { if (!open) closeGenerator(); }}>
+          <SheetContent className="generator-sheet sm:max-w-[500px]">
+            <SheetHeader className="sheet-header-custom">
+              <div className="sheet-avatar generator-sheet-avatar"><WandSparkles /></div>
+              <SheetTitle className="text-xl">Продолжить график</SheetTitle>
+              <SheetDescription>Первые {GENERATION_SEED_DAYS} дней останутся без изменений</SheetDescription>
+            </SheetHeader>
+            <div className="sheet-body">
+              {generating ? (
+                <div className="calculation-loading" role="status" aria-live="polite">
+                  <span className="calculation-spinner"><Loader2 className="animate-spin" aria-hidden="true" /></span>
+                  <h3>Формируем график до конца месяца…</h3>
+                  <p>Проверяем отдых, рабочие блоки, полные выходные и распределение нагрузки.</p>
+                </div>
+              ) : generationOptions.length ? (
+                <div className="generation-results">
+                  <div className="generation-success"><CheckCircle2 /><span><strong>Найдено допустимое продолжение</strong><small>Выберите вариант и проверьте его в основной таблице.</small></span></div>
+                  <div className="generation-option-list">
+                    {generationOptions.map((option, index) => {
+                      const selected = option.key === selectedGenerationKey;
+                      return <button type="button" key={option.key} className={cn("generation-option", selected && "generation-option-selected")} onClick={() => chooseGenerationOption(option)}>
+                        <span className="generation-option-title">Вариант {index + 1}{index === 0 && <em>Рекомендуемый</em>}</span>
+                        <span className="generation-option-metrics"><span>Разброс нагрузки<strong>{option.metrics.loadSpreadHours} ч</strong></span><span>Совпадение со схемой<strong>{option.metrics.patternTotal ? `${Math.round(option.metrics.patternMatches / option.metrics.patternTotal * 100)}%` : "—"}</strong></span></span>
+                      </button>;
+                    })}
+                  </div>
+                  <div className="generation-employee-hours">
+                    {PEOPLE.map((person) => {
+                      const employeeId = employeeIdByName[person];
+                      const option = generationOptions.find((item) => item.key === selectedGenerationKey) ?? generationOptions[0];
+                      return <span key={person}><strong>{person}</strong><small>{option.metrics.workHours[employeeId]} ч · {option.metrics.dayShifts[employeeId]} день / {option.metrics.nightShifts[employeeId]} ночь</small></span>;
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="generation-mode-section">
+                  <h3>Как продолжить расписание?</h3>
+                  <button type="button" className={cn("generation-mode-card", generationMode === "pattern" && "generation-mode-card-selected")} onClick={() => { setGenerationMode("pattern"); setGenerationError(""); }}>
+                    <span className="generation-mode-icon"><History /></span><span><strong>Продолжить заданную схему</strong><small>Максимально повторить порядок дневных и ночных смен, заданный в первых восьми днях.</small></span><i />
+                  </button>
+                  <button type="button" className={cn("generation-mode-card", generationMode === "optimal" && "generation-mode-card-selected")} onClick={() => { setGenerationMode("optimal"); setGenerationError(""); }}>
+                    <span className="generation-mode-icon"><ShieldCheck /></span><span><strong>Составить оптимальный график</strong><small>В первую очередь выровнять количество часов, дневных и ночных смен.</small></span><i />
+                  </button>
+                  <div className="generation-lock-note"><LockKeyhole /><span>Все назначения до голубой линии зафиксированы и не участвуют в перестановках.</span></div>
+                  {generationError && <div className="generation-error"><TriangleAlert /><span>{generationError}</span></div>}
+                </div>
+              )}
+            </div>
+            <SheetFooter className="sheet-footer-custom">
+              {generating ? <><Button variant="outline" disabled>Отмена</Button><Button disabled><Loader2 className="animate-spin" />Идёт расчёт…</Button></> : generationOptions.length ? <><Button variant="outline" onClick={() => { setGenerationOptions([]); setSelectedGenerationKey(""); setGenerationPreview(null); setGenerationError(""); }}>Назад</Button><Button onClick={applyGeneratedSchedule}><CheckCircle2 />Применить продолжение</Button></> : <><Button variant="outline" onClick={closeGenerator}>Отмена</Button><Button onClick={calculateGeneratedSchedule}><WandSparkles />Рассчитать</Button></>}
+            </SheetFooter>
+          </SheetContent>
+        </Sheet>
 
         <Sheet open={employeeOpen} onOpenChange={setEmployeeOpen}>
           <SheetContent className="employee-sheet sm:max-w-[430px]">
