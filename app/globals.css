@@ -335,6 +335,9 @@ button { font: inherit; }
 .new-month-details span { display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid #e4e9ef; border-radius: 9px; color: #8a96a6; background: #fafbfd; font-size: 10px; }
 .new-month-details strong { color: #374459; font-size: 12px; }
 .reset-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 23px; }
+.cancel-draft-dialog { width: min(500px,100%); }
+.cancel-draft-dialog-actions { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); }
+.cancel-draft-dialog-actions button { width: 100%; min-width: 0; height: auto; min-height: 40px; padding: 9px 13px; white-space: normal; line-height: 1.25; text-align: center; }
 @keyframes reset-backdrop-in { from { opacity: 0; } }
 @keyframes reset-dialog-in { from { opacity: 0; transform: translateY(7px) scale(.985); } }
 @keyframes calculation-spin { to { transform: rotate(360deg); } }
@@ -359,4 +362,10 @@ button { font: inherit; }
   .toolbar-right { width: 100%; justify-content: space-between; }
   .summary-grid { grid-template-columns: 1fr; }
   .schedule-footer span:last-child { display: none; }
+}
+
+@media (max-width: 520px) {
+  .reset-dialog-backdrop { padding: 12px; }
+  .reset-dialog { padding: 22px; }
+  .cancel-draft-dialog-actions { grid-template-columns: 1fr; }
 }
