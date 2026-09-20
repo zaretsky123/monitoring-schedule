@@ -1260,7 +1260,7 @@ export default function Home() {
 
         <main className="main-area">
           <header className="topbar">
-            <div className="topbar-heading"><h1>График работы</h1><span className={cn("coverage-status", scheduleStatus === "draft" && "coverage-draft", scheduleStatus === "published" && !currentValidation.valid && "coverage-error")}><span className="status-dot" />{scheduleStatus === "draft" ? `Черновик · ${assignedMonthShifts} из ${monthShifts.length} смен` : previewSchedule ? "Предпросмотр варианта" : currentValidation.valid ? `${lifecycleLabel(currentLifecycle)} · требования выполнены` : `${currentValidation.issues.length} нарушений`}</span></div>
+            <div className="topbar-heading"><h1>График работы</h1></div>
             <div className="topbar-actions">
               {scheduleStatus === "draft" ? <>
                 <Button variant="outline" className="cancel-draft-button" onClick={() => setCancelDraftConfirmOpen(true)}>Отменить создание</Button>
