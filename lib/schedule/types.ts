@@ -23,6 +23,10 @@ export type Period = {
   end: Date;
 };
 
+export type StoredScheduleStatus = "draft" | "published";
+
+export type ScheduleLifecycleStatus = "draft" | "planned" | "active" | "completed";
+
 export type Absence = {
   employeeId: string;
   start: Date;
