@@ -68,3 +68,19 @@ export type ScheduleOption = {
     changeSpanHours: number;
   };
 };
+
+export type GenerationMode = "pattern" | "optimal";
+
+export type GeneratedScheduleOption = {
+  key: string;
+  mode: GenerationMode;
+  schedule: Shift[];
+  metrics: {
+    patternMatches: number;
+    patternTotal: number;
+    workHours: Record<string, number>;
+    dayShifts: Record<string, number>;
+    nightShifts: Record<string, number>;
+    loadSpreadHours: number;
+  };
+};
