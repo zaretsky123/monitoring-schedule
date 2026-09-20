@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   CheckCircle2,
@@ -118,6 +118,15 @@ const MONTHS_STORAGE_KEY = "monitoring-schedule:months:v1";
 const EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const WEEKDAYS_RU = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 const MONTHS_RU = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+const QUARTER_MONTHS = [
+  { year: 2026, month: 9 },
+  { year: 2026, month: 10 },
+  { year: 2026, month: 11 },
+] as const;
+const QUARTER_START = utcDate(2026, 9, 1);
+const QUARTER_END = utcDate(2026, 12, 1);
+const QUARTER_PERIOD = { year: 2026, month: 9, start: QUARTER_START, end: QUARTER_END };
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 type PersistedSchedule = {
   version: 1 | 2 | 3 | 4 | 5;
@@ -182,18 +191,6 @@ type ShiftSelection = {
   kind: ShiftKind;
   startDay: number;
 };
-
-function dayInfo(period: Period, day: number) {
-  const date = utcDate(period.year, period.month, day);
-  const weekday = new Intl.DateTimeFormat("ru-RU", {
-    weekday: "short",
-    timeZone: "UTC",
-  })
-    .format(date)
-    .replace(".", "");
-  const dayOfWeek = date.getUTCDay();
-  return { weekday, weekend: dayOfWeek === 0 || dayOfWeek === 6 };
-}
 
 function shortDateTime(date: Date) {
   return new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }).format(date);
@@ -462,7 +459,7 @@ function mergeAdjacentContext(
 function changeMarkerLeft(start: Date, period: Period, dayCount: number) {
   if (start < period.start) return NAME_WIDTH;
   if (start >= period.end) return NAME_WIDTH + dayCount * DAY_WIDTH;
-  const dayIndex = start.getUTCDate() - 1;
+  const dayIndex = Math.floor((start.getTime() - period.start.getTime()) / DAY_MS);
   const hour = start.getUTCHours();
   const hourOffset = hour >= 20 ? 120 : hour >= 8 ? 34 : 0;
   return NAME_WIDTH + dayIndex * DAY_WIDTH + hourOffset;
@@ -522,6 +519,7 @@ function NavButton({ label, icon: Icon, active, expanded }: {
 
 export default function Home() {
   const [selectedMonthKey, setSelectedMonthKey] = useState("2026-10");
+  const [viewMonthKey, setViewMonthKey] = useState("2026-09");
   const [monthStore, setMonthStore] = useState<PersistedMonthStore>({ version: 1, selectedMonthKey: "2026-10", months: {} });
   const [schedule, setSchedule] = useState<Shift[]>(() => createOctober2026Schedule());
   const [baselineSchedule, setBaselineSchedule] = useState<Shift[]>(() => createOctober2026Schedule());
@@ -555,6 +553,9 @@ export default function Home() {
   const [newMonthConfirmOpen, setNewMonthConfirmOpen] = useState(false);
   const [cancelDraftConfirmOpen, setCancelDraftConfirmOpen] = useState(false);
   const [draftPublishError, setDraftPublishError] = useState("");
+  const scheduleScrollRef = useRef<HTMLDivElement | null>(null);
+  const initialQuarterScrollDone = useRef(false);
+  const scrollActivationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialNextMonth = addMonths(2026, 10, 1);
   const [newMonthYear, setNewMonthYear] = useState(String(initialNextMonth.year));
   const [newMonthNumber, setNewMonthNumber] = useState(String(initialNextMonth.month));
@@ -564,8 +565,41 @@ export default function Home() {
   const days = useMemo(() => Array.from({ length: dayCount }, (_, index) => index + 1), [dayCount]);
   const monthLabel = formatMonthLabel(period.year, period.month);
   const monthGenitive = formatMonthGenitive(period.year, period.month);
-  const currentLifecycle = lifecycleStatus(scheduleStatus, period);
   const displaySchedule = previewSchedule ?? schedule;
+  const quarterDays = useMemo(() => {
+    const result: Array<{ date: Date; day: number; year: number; month: number; monthKey: string; weekday: string; weekend: boolean }> = [];
+    for (let cursor = QUARTER_START; cursor < QUARTER_END; cursor = addDays(cursor, 1)) {
+      const dayOfWeek = cursor.getUTCDay();
+      result.push({
+        date: cursor,
+        day: cursor.getUTCDate(),
+        year: cursor.getUTCFullYear(),
+        month: cursor.getUTCMonth() + 1,
+        monthKey: monthKey(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1),
+        weekday: WEEKDAYS_RU[dayOfWeek],
+        weekend: dayOfWeek === 0 || dayOfWeek === 6,
+      });
+    }
+    return result;
+  }, []);
+  const quarterDayCount = quarterDays.length;
+  const quarterSchedule = useMemo(() => {
+    const shifts = new Map<string, Shift>();
+    for (const quarterMonth of QUARTER_MONTHS) {
+      const key = monthKey(quarterMonth.year, quarterMonth.month);
+      const storedShifts = key === selectedMonthKey ? displaySchedule : deserializeShifts(monthStore.months[key]?.schedule);
+      for (const shift of storedShifts ?? []) shifts.set(shift.id, shift);
+    }
+    for (const shift of displaySchedule) shifts.set(shift.id, shift);
+    return shifts;
+  }, [displaySchedule, monthStore.months, selectedMonthKey]);
+  const today = useMemo(() => utcDate(new Date().getUTCFullYear(), new Date().getUTCMonth() + 1, new Date().getUTCDate()), []);
+  const todayIndex = today >= QUARTER_START && today < QUARTER_END
+    ? Math.floor((today.getTime() - QUARTER_START.getTime()) / DAY_MS)
+    : -1;
+  const todayLabel = todayIndex >= 0
+    ? new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" }).format(today)
+    : "вне квартала";
   const contextualSchedule = useMemo(
     () => mergeAdjacentContext(displaySchedule, monthStore.months, selectedMonthKey, period),
     [displaySchedule, monthStore.months, period, selectedMonthKey],
@@ -641,6 +675,21 @@ export default function Home() {
       return next;
     });
   }, [baselineSchedule, changeEvents, historyCount, schedule, scheduleStatus, selectedMonthKey, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady || initialQuarterScrollDone.current) return;
+    initialQuarterScrollDone.current = true;
+    const currentKey = todayIndex >= 0 ? quarterDays[todayIndex].monthKey : selectedMonthKey;
+    setViewMonthKey(currentKey);
+    window.requestAnimationFrame(() => {
+      const target = quarterDays.findIndex((item) => item.monthKey === currentKey);
+      scheduleScrollRef.current?.scrollTo({ left: Math.max(0, target) * DAY_WIDTH, behavior: "auto" });
+    });
+  }, [quarterDays, selectedMonthKey, storageReady, todayIndex]);
+
+  useEffect(() => () => {
+    if (scrollActivationTimer.current) clearTimeout(scrollActivationTimer.current);
+  }, []);
 
   useEffect(() => {
     if (!resetConfirmOpen && !newMonthConfirmOpen && !cancelDraftConfirmOpen && rollbackConfirmId === null) return;
@@ -760,6 +809,25 @@ export default function Home() {
           </>}
         </DropdownMenuContent>
       </DropdownMenu>
+    );
+  }
+
+  function renderQuarterReadOnlyShift(person: Person, shift: Shift, targetMonthKey: string, segment: "left" | "center" | "right") {
+    const targetMonth = parseMonthKey(targetMonthKey)!;
+    const kind: ShiftKind = shift.type === "D" ? "day" : "night";
+    const longLabel = kind === "night"
+      ? `${shortDateTime(shift.start)} — ${shortDateTime(shift.end)}`
+      : `${new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" }).format(shift.start)}, 08:00–20:00`;
+    return (
+      <button
+        type="button"
+        className={cn("shift-segment", "quarter-readonly-shift", kind === "day" ? "shift-day" : "shift-night", segment === "left" && "segment-left", segment === "right" && "segment-right")}
+        onClick={() => navigateToQuarterMonth(targetMonthKey)}
+        aria-label={`${person}. ${kind === "day" ? "Дневная" : "Ночная"} смена: ${longLabel}. Открыть месяц`}
+        title={`${longLabel} · открыть ${formatMonthGenitive(targetMonth.year, targetMonth.month)}`}
+      >
+        <span>{kind === "day" ? "Д" : "Н"}</span>
+      </button>
     );
   }
 
@@ -950,8 +1018,47 @@ export default function Home() {
     resetTransientView();
   }
 
-  function openNewMonthDialog() {
-    const next = addMonths(period.year, period.month, 1);
+  function quarterMonthStartIndex(targetKey: string) {
+    return quarterDays.findIndex((item) => item.monthKey === targetKey);
+  }
+
+  function scrollToQuarterMonth(targetKey: string, behavior: ScrollBehavior = "smooth") {
+    const target = quarterMonthStartIndex(targetKey);
+    if (target < 0) return;
+    scheduleScrollRef.current?.scrollTo({ left: target * DAY_WIDTH, behavior });
+    setViewMonthKey(targetKey);
+  }
+
+  function navigateToQuarterMonth(targetKey: string) {
+    if (monthStore.months[targetKey] && targetKey !== selectedMonthKey) openStoredMonth(targetKey);
+    scrollToQuarterMonth(targetKey);
+  }
+
+  function jumpToToday() {
+    if (todayIndex < 0) return;
+    const targetKey = quarterDays[todayIndex].monthKey;
+    if (monthStore.months[targetKey] && targetKey !== selectedMonthKey) openStoredMonth(targetKey);
+    setViewMonthKey(targetKey);
+    scheduleScrollRef.current?.scrollTo({ left: todayIndex * DAY_WIDTH, behavior: "smooth" });
+  }
+
+  function handleQuarterScroll() {
+    const element = scheduleScrollRef.current;
+    if (!element) return;
+    const visibleDayIndex = Math.min(quarterDayCount - 1, Math.max(0, Math.round(element.scrollLeft / DAY_WIDTH)));
+    const nextViewKey = quarterDays[visibleDayIndex]?.monthKey;
+    if (!nextViewKey || nextViewKey === viewMonthKey) return;
+    setViewMonthKey(nextViewKey);
+    if (scrollActivationTimer.current) clearTimeout(scrollActivationTimer.current);
+    if (monthStore.months[nextViewKey] && nextViewKey !== selectedMonthKey) {
+      scrollActivationTimer.current = setTimeout(() => openStoredMonth(nextViewKey), 220);
+    }
+  }
+
+  function openNewMonthDialog(targetKey?: string) {
+    const requested = targetKey ? parseMonthKey(targetKey) : null;
+    const firstMissingKey = QUARTER_MONTHS.map((value) => monthKey(value.year, value.month)).find((key) => !monthStore.months[key]);
+    const next = requested ?? (firstMissingKey ? parseMonthKey(firstMissingKey)! : viewedMonth);
     setNewMonthYear(String(next.year));
     setNewMonthNumber(String(next.month));
     setNewMonthConfirmOpen(true);
@@ -968,6 +1075,8 @@ export default function Home() {
     };
     if (source.months[targetKey]) {
       openStoredMonth(targetKey, source);
+      setViewMonthKey(targetKey);
+      window.requestAnimationFrame(() => scrollToQuarterMonth(targetKey, "auto"));
       setNewMonthConfirmOpen(false);
       return;
     }
@@ -987,6 +1096,7 @@ export default function Home() {
     };
     saveMonthStore(nextStore);
     setSelectedMonthKey(targetKey);
+    setViewMonthKey(targetKey);
     setSchedule(blank);
     setBaselineSchedule([]);
     setScheduleStatus("draft");
@@ -994,6 +1104,7 @@ export default function Home() {
     setChangeEvents([]);
     resetTransientView();
     setNewMonthConfirmOpen(false);
+    window.requestAnimationFrame(() => scrollToQuarterMonth(targetKey, "smooth"));
   }
 
   function assignDraftShift(shiftId: string, employeeId: string) {
@@ -1053,12 +1164,14 @@ export default function Home() {
         const nextStore = { version: 1 as const, selectedMonthKey: fallbackKey, months };
         saveMonthStore(nextStore);
         setSelectedMonthKey(fallbackKey);
+        setViewMonthKey(fallbackKey);
         setSchedule(restored.schedule);
         setBaselineSchedule(restored.baselineSchedule);
         setScheduleStatus(restored.status);
         setChangeEvents(restored.changeEvents);
         setHistoryCount(restored.historyCount);
         resetTransientView();
+        window.requestAnimationFrame(() => scrollToQuarterMonth(fallbackKey, "smooth"));
       }
     }
     setCancelDraftConfirmOpen(false);
@@ -1217,27 +1330,34 @@ export default function Home() {
     }
   }
 
-  const gridStyle = { gridTemplateColumns: `${NAME_WIDTH}px repeat(${dayCount}, ${DAY_WIDTH}px)` };
+  const gridStyle = { gridTemplateColumns: `${NAME_WIDTH}px repeat(${quarterDayCount}, ${DAY_WIDTH}px)` };
   const monthShifts = schedule.filter((shift) => shift.start >= period.start && shift.start < period.end);
   const assignedMonthShifts = monthShifts.filter((shift) => Boolean(shift.employeeId)).length;
   const boundaryShiftAssigned = schedule.some((shift) => shift.start < period.start && shift.end > period.start && Boolean(shift.employeeId));
   const selectedStats = selectedEmployee ? personStats(selectedEmployee, displaySchedule, period) : null;
   const selectedChange = selectedChangeId === null ? null : changeEvents.find((change) => change.id === selectedChangeId) ?? null;
-  const storedMonthKeys = Object.keys(monthStore.months).sort();
-  const selectedMonthIndex = storedMonthKeys.indexOf(selectedMonthKey);
-  const previousMonthKey = selectedMonthIndex > 0 ? storedMonthKeys[selectedMonthIndex - 1] : null;
-  const nextMonthKey = selectedMonthIndex >= 0 && selectedMonthIndex < storedMonthKeys.length - 1 ? storedMonthKeys[selectedMonthIndex + 1] : null;
+  const quarterMonthKeys = QUARTER_MONTHS.map((value) => monthKey(value.year, value.month));
+  const viewMonthIndex = Math.max(0, quarterMonthKeys.indexOf(viewMonthKey));
+  const previousMonthKey = viewMonthIndex > 0 ? quarterMonthKeys[viewMonthIndex - 1] : null;
+  const nextMonthKey = viewMonthIndex < quarterMonthKeys.length - 1 ? quarterMonthKeys[viewMonthIndex + 1] : null;
+  const viewedMonth = parseMonthKey(viewMonthKey) ?? QUARTER_MONTHS[0];
+  const viewedMonthLabel = formatMonthLabel(viewedMonth.year, viewedMonth.month);
+  const viewedRecord = monthStore.months[viewMonthKey];
+  const viewedLifecycle = viewedRecord
+    ? lifecycleStatus(viewedRecord.status === "draft" ? "draft" : "published", periodForMonth(viewedMonth.year, viewedMonth.month))
+    : null;
+  const viewingSelectedMonth = viewMonthKey === selectedMonthKey;
   const requestedNewMonthKey = monthKey(Number(newMonthYear), Number(newMonthNumber));
   const requestedMonthExists = Boolean(monthStore.months[requestedNewMonthKey]);
   const changeMarkers = useMemo(() => {
     const previousPositions: number[] = [];
     return changeEvents.map((change) => {
-      const left = changeMarkerLeft(change.start, period, dayCount);
+      const left = changeMarkerLeft(change.start, QUARTER_PERIOD, quarterDayCount);
       const lane = previousPositions.filter((position) => Math.abs(position - left) < 112).length % 2;
       previousPositions.push(left);
       return { change, left, lane };
     });
-  }, [changeEvents, dayCount, period]);
+  }, [changeEvents, quarterDayCount]);
 
   return (
     <TooltipProvider>
@@ -1260,31 +1380,31 @@ export default function Home() {
 
         <main className="main-area">
           <header className="topbar">
-            <div className="topbar-heading"><h1>График работы</h1><span className={cn("coverage-status", scheduleStatus === "draft" && "coverage-draft", scheduleStatus === "published" && !currentValidation.valid && "coverage-error")}><span className="status-dot" />{scheduleStatus === "draft" ? `Черновик · ${assignedMonthShifts} из ${monthShifts.length} смен` : previewSchedule ? "Предпросмотр варианта" : currentValidation.valid ? `${lifecycleLabel(currentLifecycle)} · требования выполнены` : `${currentValidation.issues.length} нарушений`}</span></div>
+            <div className="topbar-heading"><h1>График работы</h1></div>
             <div className="topbar-actions">
-              {scheduleStatus === "draft" ? <>
+              {viewingSelectedMonth && scheduleStatus === "draft" ? <>
                 <Button variant="outline" className="cancel-draft-button" onClick={() => setCancelDraftConfirmOpen(true)}>Отменить создание</Button>
                 <Button className="publish-draft-button" onClick={publishDraft}><LockKeyhole />Закрепить план</Button>
-              </> : <Button variant="outline" className="new-month-button" onClick={openNewMonthDialog}><Plus />Создать месяц</Button>}
-              <Button variant="outline" size="icon" onClick={() => previousMonthKey && openStoredMonth(previousMonthKey)} disabled={!previousMonthKey} aria-label="Предыдущий сохранённый месяц"><ChevronLeft /></Button>
+              </> : <Button variant="outline" className="new-month-button" onClick={() => openNewMonthDialog(viewedRecord ? undefined : viewMonthKey)}><Plus />{viewedRecord ? "Создать месяц" : `Создать ${MONTHS_RU[viewedMonth.month - 1].toLowerCase()}`}</Button>}
+              <Button variant="outline" size="icon" onClick={() => previousMonthKey && navigateToQuarterMonth(previousMonthKey)} disabled={!previousMonthKey} aria-label="Предыдущий месяц квартала"><ChevronLeft /></Button>
               <DropdownMenu>
-                <DropdownMenuTrigger asChild><button type="button" className="month-button"><CalendarDays />{monthLabel}<small>{lifecycleLabel(currentLifecycle)}</small></button></DropdownMenuTrigger>
+                <DropdownMenuTrigger asChild><button type="button" className="month-button"><CalendarDays />{viewedMonthLabel}<small>{viewedLifecycle ? lifecycleLabel(viewedLifecycle) : "Не создан"}</small></button></DropdownMenuTrigger>
                 <DropdownMenuContent align="center" className="month-menu-content">
-                  <DropdownMenuLabel>Сохранённые графики</DropdownMenuLabel>
+                  <DropdownMenuLabel>Сентябрь — ноябрь 2026</DropdownMenuLabel>
                   <DropdownMenuSeparator />
-                  {storedMonthKeys.map((key) => {
+                  {quarterMonthKeys.map((key) => {
                     const value = parseMonthKey(key)!;
-                    const storedStatus = monthStore.months[key].status === "draft" ? "draft" : "published";
-                    const status = lifecycleStatus(storedStatus, periodForMonth(value.year, value.month));
-                    return <DropdownMenuItem key={key} disabled={key === selectedMonthKey} onSelect={() => openStoredMonth(key)}><span className="month-menu-item"><strong>{formatMonthLabel(value.year, value.month)}</strong><small>{lifecycleLabel(status)}</small></span></DropdownMenuItem>;
+                    const record = monthStore.months[key];
+                    const status = record ? lifecycleStatus(record.status === "draft" ? "draft" : "published", periodForMonth(value.year, value.month)) : null;
+                    return <DropdownMenuItem key={key} disabled={key === viewMonthKey} onSelect={() => navigateToQuarterMonth(key)}><span className="month-menu-item"><strong>{formatMonthLabel(value.year, value.month)}</strong><small>{status ? lifecycleLabel(status) : "Не создан"}</small></span></DropdownMenuItem>;
                   })}
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={openNewMonthDialog}><Plus />Создать новый месяц</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => openNewMonthDialog()}><Plus />Создать новый месяц</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <Button variant="outline" size="icon" onClick={() => nextMonthKey && openStoredMonth(nextMonthKey)} disabled={!nextMonthKey} aria-label="Следующий сохранённый месяц"><ChevronRight /></Button>
-              {scheduleStatus === "published" && <Button variant="outline" className="reset-schedule-button" onClick={() => setResetConfirmOpen(true)} disabled={!hasAppliedChanges} title={hasAppliedChanges ? "Отменить все применённые перестановки" : "График уже соответствует исходному"}><RotateCcw /><span>Вернуть исходный</span></Button>}
-              <Button className="export-button" onClick={exportExcel} disabled={exporting || scheduleStatus === "draft"}><Download />{exporting ? "Готовим Excel…" : "Скачать Excel"}</Button>
+              <Button variant="outline" size="icon" onClick={() => nextMonthKey && navigateToQuarterMonth(nextMonthKey)} disabled={!nextMonthKey} aria-label="Следующий месяц квартала"><ChevronRight /></Button>
+              {viewingSelectedMonth && scheduleStatus === "published" && <Button variant="outline" className="reset-schedule-button" onClick={() => setResetConfirmOpen(true)} disabled={!hasAppliedChanges} title={hasAppliedChanges ? "Отменить все применённые перестановки" : "График уже соответствует исходному"}><RotateCcw /><span>Вернуть исходный</span></Button>}
+              <Button className="export-button" onClick={exportExcel} disabled={exporting || scheduleStatus === "draft" || !viewingSelectedMonth}><Download />{exporting ? "Готовим Excel…" : "Скачать Excel"}</Button>
               <button type="button" className="profile-button coming-icon-button" aria-disabled="true" aria-label="Профиль пользователя — будет позже" title="Будет позже">А</button>
             </div>
           </header>
@@ -1292,21 +1412,29 @@ export default function Home() {
           <div className="content-area">
             <section className="schedule-card" aria-labelledby="schedule-title">
               <div className="schedule-toolbar">
-                <div><h2 id="schedule-title">{scheduleStatus === "draft" ? "Черновик исходного графика" : "Расписание"}</h2><p>{scheduleStatus === "draft" ? "Нажмите на свободный сегмент в строке сотрудника, чтобы назначить смену" : "Дневная смена 08:00–20:00 · ночная смена 20:00–08:00"}</p></div>
+                <div><h2 id="schedule-title">График на квартал</h2><p>1 сентября — 30 ноября 2026 · дневная смена 08:00–20:00 · ночная смена 20:00–08:00</p></div>
                 <div className="toolbar-right">
                   {focusPerson && <button className="focus-chip" onClick={() => setFocusPerson(null)}>Показан {focusPerson}<span>Сбросить</span></button>}
+                  <button type="button" className="today-jump-button" onClick={jumpToToday} disabled={todayIndex < 0}><CalendarDays /><span>Сегодня, {todayLabel}</span></button>
                   <div className="legend" aria-label="Обозначения смен"><span><Sun />День</span><span><Moon />Ночь</span></div>
                 </div>
               </div>
 
-              {scheduleStatus === "draft" && (
+              {!viewedRecord && (
+                <div className="quarter-empty-notice">
+                  <div><CalendarDays /><span><strong>График за {formatMonthGenitive(viewedMonth.year, viewedMonth.month)} ещё не создан</strong><small>Месяц остаётся на общей шкале квартала и будет пустым до создания графика.</small></span></div>
+                  <Button variant="outline" onClick={() => openNewMonthDialog(viewMonthKey)}><Plus />Создать график</Button>
+                </div>
+              )}
+
+              {viewingSelectedMonth && scheduleStatus === "draft" && (
                 <div className={cn("draft-progress", draftPublishError && "draft-progress-error")}>
                   <div><WandSparkles /><span><strong>{assignedMonthShifts} из {monthShifts.length} смен месяца назначено</strong><small>{boundaryShiftAssigned ? "Граничная ночная смена также назначена" : "Назначьте ночную смену, входящую в первое число месяца"}</small></span></div>
                   {draftPublishError && <p><TriangleAlert />{draftPublishError}</p>}
                 </div>
               )}
 
-              <div className="schedule-scroll" tabIndex={0} aria-label={`График за ${monthGenitive}`}>
+              <div ref={scheduleScrollRef} className="schedule-scroll" tabIndex={0} aria-label="График с 1 сентября по 30 ноября 2026" onScroll={handleQuarterScroll}>
                 <div className={cn("schedule-grid", changeMarkers.length > 0 && "schedule-grid-with-markers")} style={gridStyle}>
                   {changeMarkers.length > 0 && <div className="change-markers-layer" aria-label="Применённые изменения">
                     {changeMarkers.map(({ change, left, lane }) => <div className={cn("change-marker", selectedChangeId === change.id && "change-marker-active")} style={{ left }} key={change.id}>
@@ -1314,11 +1442,22 @@ export default function Home() {
                       <span className="change-marker-line" />
                     </div>)}
                   </div>}
+                  {todayIndex >= 0 && <div className="today-marker" style={{ left: NAME_WIDTH + todayIndex * DAY_WIDTH }} aria-hidden="true"><span>Сегодня</span></div>}
+
+                  <div className="sticky-name quarter-corner"><span>Квартал</span><small>сен — ноя</small></div>
+                  {QUARTER_MONTHS.map((quarterMonth) => {
+                    const key = monthKey(quarterMonth.year, quarterMonth.month);
+                    const record = monthStore.months[key];
+                    return <button type="button" key={`band-${key}`} className={cn("quarter-month-band", key === viewMonthKey && "quarter-month-active", !record && "quarter-month-empty")} style={{ gridColumn: `span ${daysInMonth(quarterMonth.year, quarterMonth.month)}` }} onClick={() => navigateToQuarterMonth(key)}>
+                      <strong>{MONTHS_RU[quarterMonth.month - 1]} {quarterMonth.year}</strong><small>{record ? (record.status === "draft" ? "Черновик" : "График создан") : "График не создан"}</small>
+                    </button>;
+                  })}
+
                   <div className="sticky-name header-name"><span>Сотрудники</span><span className="header-count">4</span></div>
-                  {days.map((day) => { const info = dayInfo(period, day); return <div key={`date-${day}`} className={cn("date-header", info.weekend && "weekend-header")}><strong>{day}</strong><span>{info.weekday}</span></div>; })}
+                  {quarterDays.map((item, index) => <div key={`date-${dateKey(item.date)}`} className={cn("date-header", item.weekend && "weekend-header", item.day === 1 && "month-start-cell", index === todayIndex && "today-header")}><strong>{item.day}</strong><span>{index === todayIndex ? `Сегодня · ${item.weekday}` : item.weekday}</span></div>)}
 
                   <div className="sticky-name time-name"><Clock3 />Время</div>
-                  {days.map((day) => { const info = dayInfo(period, day); return <div key={`time-${day}`} className={cn("time-cell", info.weekend && "weekend-cell")}><span>00–08</span><span>08–20</span><span>20–24</span></div>; })}
+                  {quarterDays.map((item) => <div key={`time-${dateKey(item.date)}`} className={cn("time-cell", item.weekend && "weekend-cell", item.day === 1 && "month-start-cell")}><span>00–08</span><span>08–20</span><span>20–24</span></div>)}
 
                   {PEOPLE.map((person, personIndex) => {
                     const isFocusedOut = Boolean(focusPerson && focusPerson !== person);
@@ -1327,37 +1466,37 @@ export default function Home() {
                       <button key={`${person}-name`} type="button" className={cn("sticky-name employee-name", isHighlighted && "employee-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)} onFocus={() => setHoveredPerson(person)} onBlur={() => setHoveredPerson(null)} onClick={() => { setSelectedEmployee(person); setEmployeeOpen(true); }}>
                         <span className={`employee-avatar avatar-${personIndex + 1}`}>{personIndex + 1}</span><span>{person}</span><ChevronRight className="employee-chevron" />
                       </button>,
-                      ...days.map((day) => {
-                        const info = dayInfo(period, day);
-                        const leftShift = displaySchedule.find((shift) => shift.id === shiftIdFor(period, day - 1, "night"));
-                        const dayShift = displaySchedule.find((shift) => shift.id === shiftIdFor(period, day, "day"));
-                        const nightShift = displaySchedule.find((shift) => shift.id === shiftIdFor(period, day, "night"));
+                      ...quarterDays.map((item) => {
+                        const interactive = item.monthKey === selectedMonthKey;
+                        const leftShift = quarterSchedule.get(`${dateKey(addDays(item.date, -1))}:N`);
+                        const dayShift = quarterSchedule.get(`${dateKey(item.date)}:D`);
+                        const nightShift = quarterSchedule.get(`${dateKey(item.date)}:N`);
                         const leftOwner = leftShift ? employeeNameById[leftShift.employeeId] : null;
                         const dayOwner = dayShift ? employeeNameById[dayShift.employeeId] : null;
                         const nightOwner = nightShift ? employeeNameById[nightShift.employeeId] : null;
-                        return <div key={`${person}-${day}`} className={cn("schedule-cell", info.weekend && "weekend-cell", isHighlighted && "cell-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)}>
-                          <div className="segment-slot left-slot">{leftOwner === person ? renderShiftSegment(person, "night", day - 1, "left") : renderDraftSlot(person, "night", day - 1, "left")}</div>
-                          <div className="segment-slot center-slot">{dayOwner === person ? renderShiftSegment(person, "day", day, "center") : renderDraftSlot(person, "day", day, "center")}</div>
-                          <div className="segment-slot right-slot">{nightOwner === person ? renderShiftSegment(person, "night", day, "right") : renderDraftSlot(person, "night", day, "right")}</div>
+                        return <div key={`${person}-${dateKey(item.date)}`} className={cn("schedule-cell", item.weekend && "weekend-cell", item.day === 1 && "month-start-cell", isHighlighted && "cell-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)}>
+                          <div className="segment-slot left-slot">{leftOwner === person ? (interactive ? renderShiftSegment(person, "night", item.day - 1, "left") : renderQuarterReadOnlyShift(person, leftShift!, item.monthKey, "left")) : (interactive ? renderDraftSlot(person, "night", item.day - 1, "left") : null)}</div>
+                          <div className="segment-slot center-slot">{dayOwner === person ? (interactive ? renderShiftSegment(person, "day", item.day, "center") : renderQuarterReadOnlyShift(person, dayShift!, item.monthKey, "center")) : (interactive ? renderDraftSlot(person, "day", item.day, "center") : null)}</div>
+                          <div className="segment-slot right-slot">{nightOwner === person ? (interactive ? renderShiftSegment(person, "night", item.day, "right") : renderQuarterReadOnlyShift(person, nightShift!, item.monthKey, "right")) : (interactive ? renderDraftSlot(person, "night", item.day, "right") : null)}</div>
                         </div>;
                       }),
                     ];
                   })}
 
                   <div className="sticky-name add-employee-row" aria-disabled="true"><span className="add-icon"><Plus /></span><span>Добавить сотрудника</span><small>Будет позже</small></div>
-                  {days.map((day) => <div key={`add-${day}`} className="add-row-cell" />)}
+                  {quarterDays.map((item) => <div key={`add-${dateKey(item.date)}`} className={cn("add-row-cell", item.day === 1 && "month-start-cell")} />)}
                 </div>
               </div>
 
-              <div className="schedule-footer"><span><Menu />{scheduleStatus === "draft" ? "Назначайте пустые смены кнопками +; назначенную смену можно снять нажатием" : "Для действий нажмите на нужную смену"}</span><span>Таблица прокручивается по горизонтали</span></div>
+              <div className="schedule-footer"><span><Menu />{viewingSelectedMonth && scheduleStatus === "draft" ? "Назначайте пустые смены кнопками +; назначенную смену можно снять нажатием" : "Для действий нажмите на нужную смену"}</span><span>Прокрутка охватывает весь квартал</span></div>
             </section>
 
-            <section className="summary-grid" aria-label="Сводка графика">
+            {viewingSelectedMonth && <section className="summary-grid" aria-label="Сводка графика">
               <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>{assignedMonthShifts} из {monthShifts.length}</strong><span>смены закрыты</span></div></article>
               <article className="summary-card"><span className="summary-icon cyan"><Clock3 /></span><div><strong>12 часов</strong><span>продолжительность смены</span></div></article>
               <article className="summary-card"><span className="summary-icon violet"><Users /></span><div><strong>4 сотрудника</strong><span>в текущем графике</span></div></article>
               <article className="summary-card"><span className="summary-icon green"><ShieldCheck /></span><div><strong>{currentValidation.valid ? "Без нарушений" : currentValidation.issues.length}</strong><span>обязательные правила</span></div></article>
-            </section>
+            </section>}
           </div>
         </main>
 
@@ -1506,8 +1645,8 @@ export default function Home() {
               <h2 id="new-month-dialog-title">{requestedMonthExists ? "График этого месяца уже существует" : "Создать график с чистого листа?"}</h2>
               <p id="new-month-dialog-description">{requestedMonthExists ? "Можно открыть сохранённый график и продолжить работу с ним." : "Будет создан отдельный автоматически сохраняемый черновик. Текущий месяц останется без изменений."}</p>
               <div className="new-month-picker">
-                <label>Месяц<select value={newMonthNumber} onChange={(event) => setNewMonthNumber(event.target.value)}>{MONTHS_RU.map((name, index) => <option value={index + 1} key={name}>{name}</option>)}</select></label>
-                <label>Год<select value={newMonthYear} onChange={(event) => setNewMonthYear(event.target.value)}>{Array.from({ length: 7 }, (_, index) => 2024 + index).map((year) => <option value={year} key={year}>{year}</option>)}</select></label>
+                <label>Месяц<select value={newMonthNumber} onChange={(event) => setNewMonthNumber(event.target.value)}>{QUARTER_MONTHS.map((value) => <option value={value.month} key={value.month}>{MONTHS_RU[value.month - 1]}</option>)}</select></label>
+                <label>Год<select value={newMonthYear} onChange={(event) => setNewMonthYear(event.target.value)}><option value="2026">2026</option></select></label>
               </div>
               <div className="new-month-details"><span>Период<strong>{formatMonthLabel(Number(newMonthYear), Number(newMonthNumber))}</strong></span><span>Смен<strong>{daysInMonth(Number(newMonthYear), Number(newMonthNumber)) * 2}</strong></span><span>Статус<strong>{requestedMonthExists ? "Уже создан" : "Черновик"}</strong></span></div>
               <div className="reset-dialog-actions">
