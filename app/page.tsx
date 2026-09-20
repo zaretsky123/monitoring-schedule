@@ -65,6 +65,7 @@ import { cn } from "@/lib/utils";
 import { addDays } from "@/lib/schedule/calendar";
 import {
   createOctober2026Schedule,
+  createBlankOctober2026Schedule,
   employeeIdByName,
   employeeNameById,
   EMPLOYEES,
@@ -139,9 +140,11 @@ const EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.
 const WEEKDAYS_RU = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 
 type PersistedSchedule = {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   historyCount: number;
+  status?: "draft" | "published";
   schedule: Array<Omit<Shift, "start" | "end"> & { start: string; end: string }>;
+  baselineSchedule?: Array<Omit<Shift, "start" | "end"> & { start: string; end: string }>;
   changeEvents?: PersistedChangeEvent[];
 };
 
@@ -372,6 +375,8 @@ function NavButton({ label, icon: Icon, active, expanded }: {
 
 export default function Home() {
   const [schedule, setSchedule] = useState<Shift[]>(() => createOctober2026Schedule());
+  const [baselineSchedule, setBaselineSchedule] = useState<Shift[]>(() => createOctober2026Schedule());
+  const [scheduleStatus, setScheduleStatus] = useState<"draft" | "published">("published");
   const [previewSchedule, setPreviewSchedule] = useState<Shift[] | null>(null);
   const [options, setOptions] = useState<ScheduleOption[]>([]);
   const [selectedOptionKey, setSelectedOptionKey] = useState("");
@@ -398,6 +403,9 @@ export default function Home() {
   const [storageReady, setStorageReady] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [newMonthConfirmOpen, setNewMonthConfirmOpen] = useState(false);
+  const [cancelDraftConfirmOpen, setCancelDraftConfirmOpen] = useState(false);
+  const [draftPublishError, setDraftPublishError] = useState("");
   const days = useMemo(() => Array.from({ length: 31 }, (_, index) => index + 1), []);
   const displaySchedule = previewSchedule ?? schedule;
   const hasAppliedChanges = useMemo(
@@ -418,7 +426,7 @@ export default function Home() {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const persisted = JSON.parse(raw) as Partial<PersistedSchedule>;
-        if ([1, 2, 3].includes(persisted.version ?? 0) && Array.isArray(persisted.schedule)) {
+        if ([1, 2, 3, 4].includes(persisted.version ?? 0) && Array.isArray(persisted.schedule)) {
           const restored = persisted.schedule.map((shift) => ({
             ...shift,
             start: new Date(shift.start),
@@ -429,6 +437,19 @@ export default function Home() {
           );
           if (datesAreValid) {
             setSchedule(restored);
+            setScheduleStatus(persisted.status === "draft" ? "draft" : "published");
+            if (Array.isArray(persisted.baselineSchedule)) {
+              const restoredBaseline = persisted.baselineSchedule.map((shift) => ({
+                ...shift,
+                start: new Date(shift.start),
+                end: new Date(shift.end),
+              }));
+              if (restoredBaseline.every((shift) => !Number.isNaN(shift.start.getTime()) && !Number.isNaN(shift.end.getTime()))) {
+                setBaselineSchedule(restoredBaseline);
+              }
+            } else if (persisted.status !== "draft") {
+              setBaselineSchedule(restored.map((shift) => ({ ...shift, employeeId: shift.plannedEmployeeId })));
+            }
             let restoredEvents = (persisted.changeEvents ?? []).flatMap((change) => {
               if (!Array.isArray(change.beforeSchedule)) return [];
               const beforeSchedule = change.beforeSchedule.map((shift) => ({
@@ -495,9 +516,15 @@ export default function Home() {
   useEffect(() => {
     if (!storageReady) return;
     const persisted: PersistedSchedule = {
-      version: 3,
+      version: 4,
       historyCount,
+      status: scheduleStatus,
       schedule: schedule.map((shift) => ({
+        ...shift,
+        start: shift.start.toISOString(),
+        end: shift.end.toISOString(),
+      })),
+      baselineSchedule: baselineSchedule.map((shift) => ({
         ...shift,
         start: shift.start.toISOString(),
         end: shift.end.toISOString(),
@@ -523,19 +550,21 @@ export default function Home() {
     } catch {
       // График продолжит работать в текущей вкладке, даже если хранилище браузера недоступно.
     }
-  }, [changeEvents, historyCount, schedule, storageReady]);
+  }, [baselineSchedule, changeEvents, historyCount, schedule, scheduleStatus, storageReady]);
 
   useEffect(() => {
-    if (!resetConfirmOpen && rollbackConfirmId === null) return;
+    if (!resetConfirmOpen && !newMonthConfirmOpen && !cancelDraftConfirmOpen && rollbackConfirmId === null) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setResetConfirmOpen(false);
+        setNewMonthConfirmOpen(false);
+        setCancelDraftConfirmOpen(false);
         setRollbackConfirmId(null);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [resetConfirmOpen, rollbackConfirmId]);
+  }, [cancelDraftConfirmOpen, newMonthConfirmOpen, resetConfirmOpen, rollbackConfirmId]);
 
   function openWorkflow(shift: ShiftSelection, nextWorkflow: Exclude<Workflow, null>) {
     setSelectedShift(shift);
@@ -633,10 +662,30 @@ export default function Home() {
             <span className="mt-0.5 block text-sm font-semibold text-slate-900">{person}</span>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem className="rounded-lg py-2.5" variant="destructive" onSelect={() => openWorkflow(shift, "remove")}><UserX />Убрать</DropdownMenuItem>
-          <DropdownMenuItem className="rounded-lg py-2.5" onSelect={() => openWorkflow(shift, "replace")}><UserRoundCog />Заменить</DropdownMenuItem>
+          {scheduleStatus === "draft" ? (
+            <DropdownMenuItem className="rounded-lg py-2.5" variant="destructive" onSelect={() => scheduleShift && removeDraftAssignment(scheduleShift.id)}><UserX />Снять назначение</DropdownMenuItem>
+          ) : <>
+            <DropdownMenuItem className="rounded-lg py-2.5" variant="destructive" onSelect={() => openWorkflow(shift, "remove")}><UserX />Убрать</DropdownMenuItem>
+            <DropdownMenuItem className="rounded-lg py-2.5" onSelect={() => openWorkflow(shift, "replace")}><UserRoundCog />Заменить</DropdownMenuItem>
+          </>}
         </DropdownMenuContent>
       </DropdownMenu>
+    );
+  }
+
+  function renderDraftSlot(person: Person, kind: ShiftKind, startDay: number, segment: "left" | "center" | "right") {
+    if (scheduleStatus !== "draft") return null;
+    const target = schedule.find((shift) => shift.id === shiftIdFor(startDay, kind));
+    if (!target || target.employeeId) return null;
+    const employeeId = employeeIdByName[person];
+    return (
+      <button
+        type="button"
+        className={cn("draft-shift-slot", kind === "day" ? "draft-day-slot" : "draft-night-slot", `draft-${segment}-slot`)}
+        onClick={() => assignDraftShift(target.id, employeeId)}
+        aria-label={`Назначить ${person} на ${kind === "day" ? "дневную" : "ночную"} смену`}
+        title={`Назначить ${person}`}
+      ><Plus /></button>
     );
   }
 
@@ -761,8 +810,66 @@ export default function Home() {
     setRollbackConfirmId(null);
   }
 
+  function startBlankDraft() {
+    setSchedule(createBlankOctober2026Schedule());
+    setScheduleStatus("draft");
+    setPreviewSchedule(null);
+    setOptions([]);
+    setSelectedOptionKey("");
+    setExpandedOptionKey("");
+    setCalculationError("");
+    setHistoryCount(0);
+    setChangeEvents([]);
+    setSelectedChangeId(null);
+    setPendingChange(null);
+    setWorkflow(null);
+    setDraftPublishError("");
+    setNewMonthConfirmOpen(false);
+  }
+
+  function assignDraftShift(shiftId: string, employeeId: string) {
+    if (scheduleStatus !== "draft") return;
+    setSchedule((current) => current.map((shift) => shift.id === shiftId
+      ? { ...shift, employeeId, plannedEmployeeId: employeeId }
+      : shift));
+    setDraftPublishError("");
+  }
+
+  function removeDraftAssignment(shiftId: string) {
+    if (scheduleStatus !== "draft") return;
+    setSchedule((current) => current.map((shift) => shift.id === shiftId
+      ? { ...shift, employeeId: "", plannedEmployeeId: "" }
+      : shift));
+    setDraftPublishError("");
+  }
+
+  function publishDraft() {
+    const unassigned = schedule.filter((shift) => !shift.employeeId);
+    if (unassigned.length) {
+      setDraftPublishError(`Осталось назначить ${unassigned.length} ${unassigned.length === 1 ? "смену" : "смен"}.`);
+      return;
+    }
+    const validation = validateSchedule({ schedule, employees: EMPLOYEES, period: octoberPeriod() });
+    if (!validation.valid) {
+      setDraftPublishError(`Нельзя закрепить график: найдено ${validation.issues.length} нарушений обязательных правил.`);
+      return;
+    }
+    const published = schedule.map((shift) => ({ ...shift, plannedEmployeeId: shift.employeeId }));
+    setSchedule(published);
+    setBaselineSchedule(published.map((shift) => ({ ...shift })));
+    setScheduleStatus("published");
+    setDraftPublishError("");
+  }
+
+  function cancelDraft() {
+    setSchedule(baselineSchedule.map((shift) => ({ ...shift })));
+    setScheduleStatus("published");
+    setDraftPublishError("");
+    setCancelDraftConfirmOpen(false);
+  }
+
   function resetToOriginalSchedule() {
-    setSchedule(createOctober2026Schedule());
+    setSchedule(baselineSchedule.map((shift) => ({ ...shift })));
     setPreviewSchedule(null);
     setOptions([]);
     setSelectedOptionKey("");
@@ -911,6 +1018,9 @@ export default function Home() {
   }
 
   const gridStyle = { gridTemplateColumns: `${NAME_WIDTH}px repeat(31, ${DAY_WIDTH}px)` };
+  const monthShifts = schedule.filter((shift) => shift.start >= octoberPeriod().start && shift.start < octoberPeriod().end);
+  const assignedMonthShifts = monthShifts.filter((shift) => Boolean(shift.employeeId)).length;
+  const boundaryShiftAssigned = schedule.some((shift) => shift.start < octoberPeriod().start && shift.end > octoberPeriod().start && Boolean(shift.employeeId));
   const selectedStats = selectedEmployee ? personStats(selectedEmployee, displaySchedule) : null;
   const selectedChange = selectedChangeId === null ? null : changeEvents.find((change) => change.id === selectedChangeId) ?? null;
   const changeMarkers = useMemo(() => {
@@ -944,13 +1054,17 @@ export default function Home() {
 
         <main className="main-area">
           <header className="topbar">
-            <div className="topbar-heading"><h1>График работы</h1><span className={cn("coverage-status", !currentValidation.valid && "coverage-error")}><span className="status-dot" />{previewSchedule ? "Предпросмотр варианта" : currentValidation.valid ? "Все требования выполнены" : `${currentValidation.issues.length} нарушений`}</span></div>
+            <div className="topbar-heading"><h1>График работы</h1><span className={cn("coverage-status", scheduleStatus === "draft" && "coverage-draft", scheduleStatus === "published" && !currentValidation.valid && "coverage-error")}><span className="status-dot" />{scheduleStatus === "draft" ? `Черновик · ${assignedMonthShifts} из ${monthShifts.length} смен` : previewSchedule ? "Предпросмотр варианта" : currentValidation.valid ? "Все требования выполнены" : `${currentValidation.issues.length} нарушений`}</span></div>
             <div className="topbar-actions">
+              {scheduleStatus === "draft" ? <>
+                <Button variant="outline" className="cancel-draft-button" onClick={() => setCancelDraftConfirmOpen(true)}>Отменить создание</Button>
+                <Button className="publish-draft-button" onClick={publishDraft}><LockKeyhole />Закрепить план</Button>
+              </> : <Button variant="outline" className="new-month-button" onClick={() => setNewMonthConfirmOpen(true)}><Plus />Создать месяц</Button>}
               <Button variant="outline" size="icon" className="coming-icon-button" aria-disabled="true" aria-label="Предыдущий месяц — будет позже" title="Будет позже"><ChevronLeft /></Button>
               <button type="button" className="month-button month-button-coming" aria-disabled="true" title="Выбор месяца будет позже"><CalendarDays />Октябрь 2026<small>Будет позже</small></button>
               <Button variant="outline" size="icon" className="coming-icon-button" aria-disabled="true" aria-label="Следующий месяц — будет позже" title="Будет позже"><ChevronRight /></Button>
-              <Button variant="outline" className="reset-schedule-button" onClick={() => setResetConfirmOpen(true)} disabled={!hasAppliedChanges} title={hasAppliedChanges ? "Отменить все применённые перестановки" : "График уже соответствует исходному"}><RotateCcw /><span>Вернуть исходный</span></Button>
-              <Button className="export-button" onClick={exportExcel} disabled={exporting}><Download />{exporting ? "Готовим Excel…" : "Скачать Excel"}</Button>
+              {scheduleStatus === "published" && <Button variant="outline" className="reset-schedule-button" onClick={() => setResetConfirmOpen(true)} disabled={!hasAppliedChanges} title={hasAppliedChanges ? "Отменить все применённые перестановки" : "График уже соответствует исходному"}><RotateCcw /><span>Вернуть исходный</span></Button>}
+              <Button className="export-button" onClick={exportExcel} disabled={exporting || scheduleStatus === "draft"}><Download />{exporting ? "Готовим Excel…" : "Скачать Excel"}</Button>
               <button type="button" className="profile-button coming-icon-button" aria-disabled="true" aria-label="Профиль пользователя — будет позже" title="Будет позже">А</button>
             </div>
           </header>
@@ -958,12 +1072,19 @@ export default function Home() {
           <div className="content-area">
             <section className="schedule-card" aria-labelledby="schedule-title">
               <div className="schedule-toolbar">
-                <div><h2 id="schedule-title">Расписание</h2><p>Дневная смена 08:00–20:00 · ночная смена 20:00–08:00</p></div>
+                <div><h2 id="schedule-title">{scheduleStatus === "draft" ? "Черновик исходного графика" : "Расписание"}</h2><p>{scheduleStatus === "draft" ? "Нажмите на свободный сегмент в строке сотрудника, чтобы назначить смену" : "Дневная смена 08:00–20:00 · ночная смена 20:00–08:00"}</p></div>
                 <div className="toolbar-right">
                   {focusPerson && <button className="focus-chip" onClick={() => setFocusPerson(null)}>Показан {focusPerson}<span>Сбросить</span></button>}
                   <div className="legend" aria-label="Обозначения смен"><span><Sun />День</span><span><Moon />Ночь</span></div>
                 </div>
               </div>
+
+              {scheduleStatus === "draft" && (
+                <div className={cn("draft-progress", draftPublishError && "draft-progress-error")}>
+                  <div><WandSparkles /><span><strong>{assignedMonthShifts} из {monthShifts.length} смен месяца назначено</strong><small>{boundaryShiftAssigned ? "Граничная ночная смена также назначена" : "Назначьте ночную смену, входящую в первое число месяца"}</small></span></div>
+                  {draftPublishError && <p><TriangleAlert />{draftPublishError}</p>}
+                </div>
+              )}
 
               <div className="schedule-scroll" tabIndex={0} aria-label="График за октябрь 2026">
                 <div className={cn("schedule-grid", changeMarkers.length > 0 && "schedule-grid-with-markers")} style={gridStyle}>
@@ -995,9 +1116,9 @@ export default function Home() {
                         const dayOwner = dayShift ? employeeNameById[dayShift.employeeId] : null;
                         const nightOwner = nightShift ? employeeNameById[nightShift.employeeId] : null;
                         return <div key={`${person}-${day}`} className={cn("schedule-cell", info.weekend && "weekend-cell", isHighlighted && "cell-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)}>
-                          <div className="segment-slot left-slot">{leftOwner === person && renderShiftSegment(person, "night", day - 1, "left")}</div>
-                          <div className="segment-slot center-slot">{dayOwner === person && renderShiftSegment(person, "day", day, "center")}</div>
-                          <div className="segment-slot right-slot">{nightOwner === person && renderShiftSegment(person, "night", day, "right")}</div>
+                          <div className="segment-slot left-slot">{leftOwner === person ? renderShiftSegment(person, "night", day - 1, "left") : renderDraftSlot(person, "night", day - 1, "left")}</div>
+                          <div className="segment-slot center-slot">{dayOwner === person ? renderShiftSegment(person, "day", day, "center") : renderDraftSlot(person, "day", day, "center")}</div>
+                          <div className="segment-slot right-slot">{nightOwner === person ? renderShiftSegment(person, "night", day, "right") : renderDraftSlot(person, "night", day, "right")}</div>
                         </div>;
                       }),
                     ];
@@ -1008,11 +1129,11 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="schedule-footer"><span><Menu />Для действий нажмите на нужную смену</span><span>Таблица прокручивается по горизонтали</span></div>
+              <div className="schedule-footer"><span><Menu />{scheduleStatus === "draft" ? "Назначайте пустые смены кнопками +; назначенную смену можно снять нажатием" : "Для действий нажмите на нужную смену"}</span><span>Таблица прокручивается по горизонтали</span></div>
             </section>
 
             <section className="summary-grid" aria-label="Сводка графика">
-              <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>62 из 62</strong><span>смены закрыты</span></div></article>
+              <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>{assignedMonthShifts} из {monthShifts.length}</strong><span>смены закрыты</span></div></article>
               <article className="summary-card"><span className="summary-icon cyan"><Clock3 /></span><div><strong>12 часов</strong><span>продолжительность смены</span></div></article>
               <article className="summary-card"><span className="summary-icon violet"><Users /></span><div><strong>4 сотрудника</strong><span>в текущем графике</span></div></article>
               <article className="summary-card"><span className="summary-icon green"><ShieldCheck /></span><div><strong>{currentValidation.valid ? "Без нарушений" : currentValidation.issues.length}</strong><span>обязательные правила</span></div></article>
@@ -1157,6 +1278,35 @@ export default function Home() {
             </SheetFooter>
           </SheetContent>
         </Sheet>
+
+        {newMonthConfirmOpen && (
+          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setNewMonthConfirmOpen(false)}>
+            <section className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="new-month-dialog-title" aria-describedby="new-month-dialog-description">
+              <span className="reset-dialog-icon new-month-dialog-icon"><CalendarDays /></span>
+              <h2 id="new-month-dialog-title">Создать график с чистого листа?</h2>
+              <p id="new-month-dialog-description">Откроется пустой черновик октября 2026 года для четырёх сотрудников. Текущие перестановки и история будут удалены после подтверждения.</p>
+              <div className="new-month-details"><span>Месяц<strong>Октябрь 2026</strong></span><span>Сотрудники<strong>4</strong></span><span>Способ<strong>Чистый лист</strong></span></div>
+              <div className="reset-dialog-actions">
+                <Button variant="outline" autoFocus onClick={() => setNewMonthConfirmOpen(false)}>Отмена</Button>
+                <Button onClick={startBlankDraft}><Plus />Создать черновик</Button>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {cancelDraftConfirmOpen && (
+          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setCancelDraftConfirmOpen(false)}>
+            <section className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="cancel-draft-dialog-title" aria-describedby="cancel-draft-dialog-description">
+              <span className="reset-dialog-icon"><TriangleAlert /></span>
+              <h2 id="cancel-draft-dialog-title">Отменить создание графика?</h2>
+              <p id="cancel-draft-dialog-description">Все назначения в текущем черновике будут удалены. Сайт вернётся к ранее закреплённому исходному плану.</p>
+              <div className="reset-dialog-actions">
+                <Button variant="outline" autoFocus onClick={() => setCancelDraftConfirmOpen(false)}>Продолжить редактирование</Button>
+                <Button variant="destructive" onClick={cancelDraft}>Удалить черновик</Button>
+              </div>
+            </section>
+          </div>
+        )}
 
         {resetConfirmOpen && (
           <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setResetConfirmOpen(false)}>
