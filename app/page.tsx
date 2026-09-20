@@ -1296,11 +1296,11 @@ export default function Home() {
 
         {cancelDraftConfirmOpen && (
           <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setCancelDraftConfirmOpen(false)}>
-            <section className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="cancel-draft-dialog-title" aria-describedby="cancel-draft-dialog-description">
+            <section className="reset-dialog cancel-draft-dialog" role="alertdialog" aria-modal="true" aria-labelledby="cancel-draft-dialog-title" aria-describedby="cancel-draft-dialog-description">
               <span className="reset-dialog-icon"><TriangleAlert /></span>
               <h2 id="cancel-draft-dialog-title">Отменить создание графика?</h2>
               <p id="cancel-draft-dialog-description">Все назначения в текущем черновике будут удалены. Сайт вернётся к ранее закреплённому исходному плану.</p>
-              <div className="reset-dialog-actions">
+              <div className="reset-dialog-actions cancel-draft-dialog-actions">
                 <Button variant="outline" autoFocus onClick={() => setCancelDraftConfirmOpen(false)}>Продолжить редактирование</Button>
                 <Button variant="destructive" onClick={cancelDraft}>Удалить черновик</Button>
               </div>
