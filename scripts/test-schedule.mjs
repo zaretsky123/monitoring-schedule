@@ -161,4 +161,11 @@ for (const [year, month, expectedDays] of [[2027, 2, 28], [2028, 2, 29], [2026, 
   );
 }
 
-console.log("Алгоритм и месяцы: 20 проверок пройдено.");
+const octoberBoundary = createScheduleForMonth(2026, 10);
+const novemberBoundary = createScheduleForMonth(2026, 11);
+const octoberCarryOut = octoberBoundary.schedule.find((shift) => shift.type === "N" && shift.start < novemberBoundary.period.start && shift.end > novemberBoundary.period.start);
+const novemberCarryIn = novemberBoundary.schedule.find((shift) => shift.id === octoberCarryOut?.id);
+assert.ok(octoberCarryOut, "Октябрь должен содержать ночную смену, переходящую в ноябрь");
+assert.equal(novemberCarryIn?.employeeId, octoberCarryOut?.employeeId, "На границе месяцев должна сохраняться одна и та же ночная смена и сотрудник");
+
+console.log("Алгоритм и месяцы: 22 проверки пройдено.");
