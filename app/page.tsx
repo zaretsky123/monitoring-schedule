@@ -33,6 +33,16 @@ import {
 
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -1744,7 +1754,11 @@ export default function Home() {
           </SheetContent>
         </Sheet>
 
-        <Sheet open={Boolean(selectedChange)} onOpenChange={(open) => { if (!open) { setSelectedChangeId(null); setRollbackConfirmId(null); } }}>
+        <Sheet open={Boolean(selectedChange)} onOpenChange={(open) => {
+          if (!open && rollbackConfirmId === null) {
+            setSelectedChangeId(null);
+          }
+        }}>
           <SheetContent className="change-sheet sm:max-w-[440px]">
             {selectedChange && <>
               <SheetHeader className="sheet-header-custom"><div className="sheet-avatar change-sheet-avatar"><History /></div><SheetTitle className="text-xl">Изменение {selectedChange.id}</SheetTitle><SheetDescription>{changeStartLabel(selectedChange.start)} · применён вариант {selectedChange.optionNumber}</SheetDescription></SheetHeader>
@@ -1767,20 +1781,22 @@ export default function Home() {
           </SheetContent>
         </Sheet>
 
-        {rollbackTarget && (
-          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setRollbackConfirmId(null)}>
-            <section className="reset-dialog rollback-dialog" role="alertdialog" aria-modal="true" aria-labelledby="rollback-dialog-title" aria-describedby="rollback-dialog-description">
+        <AlertDialog open={Boolean(rollbackTarget)} onOpenChange={(open) => { if (!open) setRollbackConfirmId(null); }}>
+          {rollbackTarget && (
+            <AlertDialogContent className="rollback-dialog gap-0 rounded-[17px] p-[26px] sm:max-w-[430px]">
               <span className="reset-dialog-icon"><TriangleAlert /></span>
-              <h2 id="rollback-dialog-title">Откатить изменение №{rollbackTarget.id}?</h2>
-              <p id="rollback-dialog-description">Будут отменены {rollbackTarget.changes.length} {rollbackTarget.changes.length === 1 ? "перестановка" : rollbackTarget.changes.length < 5 ? "перестановки" : "перестановок"}. График вернётся к состоянию до применения этого изменения.</p>
+              <AlertDialogHeader className="block text-left">
+                <AlertDialogTitle>Откатить изменение №{rollbackTarget.id}?</AlertDialogTitle>
+                <AlertDialogDescription>Будут отменены {rollbackTarget.changes.length} {rollbackTarget.changes.length === 1 ? "перестановка" : rollbackTarget.changes.length < 5 ? "перестановки" : "перестановок"}. График вернётся к состоянию до применения этого изменения.</AlertDialogDescription>
+              </AlertDialogHeader>
               {rollbackLaterChanges.length > 0 && <div className="rollback-dialog-warning"><TriangleAlert /><span>Также будут отменены последующие изменения: {rollbackLaterChanges.map((change) => `№${change.id}`).join(", ")}.</span></div>}
-              <div className="reset-dialog-actions">
-                <Button variant="outline" autoFocus onClick={() => setRollbackConfirmId(null)}>Отмена</Button>
-                <Button variant="destructive" onClick={() => rollbackChange(rollbackTarget.id)}><RotateCcw />Откатить изменение</Button>
-              </div>
-            </section>
-          </div>
-        )}
+              <AlertDialogFooter className="reset-dialog-actions">
+                <AlertDialogCancel>Отмена</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={() => rollbackChange(rollbackTarget.id)}><RotateCcw />Откатить изменение</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          )}
+        </AlertDialog>
 
         <Sheet open={workflow !== null && options.length === 0} onOpenChange={(open) => { if (!open && options.length === 0) closeWorkflow(); }}>
           <SheetContent className="workflow-sheet sm:max-w-[480px]">
