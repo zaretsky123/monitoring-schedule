@@ -1659,7 +1659,7 @@ export default function Home() {
         </Sheet>
 
         <Sheet modal={false} open={Boolean(selectedChange)} onOpenChange={(open) => { if (!open) setSelectedChangeId(null); }}>
-          <SheetContent className="change-sheet sm:max-w-[440px]" onInteractOutside={(event) => { if (rollbackConfirmId !== null) event.preventDefault(); }}>
+          <SheetContent className="change-sheet sm:max-w-[440px]" onInteractOutside={(event) => event.preventDefault()}>
             {selectedChange && <>
               <SheetHeader className="sheet-header-custom"><div className="sheet-avatar change-sheet-avatar"><History /></div><SheetTitle className="text-xl">Изменение {selectedChange.id}</SheetTitle><SheetDescription>{changeStartLabel(selectedChange.start)} · применён вариант {selectedChange.optionNumber}</SheetDescription></SheetHeader>
               <div className="sheet-body">
