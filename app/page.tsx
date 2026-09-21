@@ -733,7 +733,10 @@ export default function Home() {
         setResetConfirmOpen(false);
         setNewMonthConfirmOpen(false);
         setCancelDraftConfirmOpen(false);
-        setRollbackConfirmId(null);
+        if (rollbackConfirmId !== null) {
+          setSelectedChangeId(rollbackConfirmId);
+          setRollbackConfirmId(null);
+        }
       }
     };
     window.addEventListener("keydown", closeOnEscape);
@@ -1008,6 +1011,16 @@ export default function Home() {
     setSelectedOptionKey("");
     setExpandedOptionKey("");
     setSelectedChangeId(null);
+    setRollbackConfirmId(null);
+  }
+
+  function openRollbackDialog(changeId: number) {
+    setSelectedChangeId(null);
+    setRollbackConfirmId(changeId);
+  }
+
+  function closeRollbackDialog() {
+    if (rollbackConfirmId !== null) setSelectedChangeId(rollbackConfirmId);
     setRollbackConfirmId(null);
   }
 
@@ -1647,7 +1660,7 @@ export default function Home() {
           </SheetContent>
         </Sheet>
 
-        <Sheet open={Boolean(selectedChange)} onOpenChange={(open) => { if (!open) { setSelectedChangeId(null); setRollbackConfirmId(null); } }}>
+        <Sheet open={Boolean(selectedChange)} onOpenChange={(open) => { if (!open) setSelectedChangeId(null); }}>
           <SheetContent className="change-sheet sm:max-w-[440px]">
             {selectedChange && <>
               <SheetHeader className="sheet-header-custom"><div className="sheet-avatar change-sheet-avatar"><History /></div><SheetTitle className="text-xl">Изменение {selectedChange.id}</SheetTitle><SheetDescription>{changeStartLabel(selectedChange.start)} · применён вариант {selectedChange.optionNumber}</SheetDescription></SheetHeader>
@@ -1665,20 +1678,20 @@ export default function Home() {
                 <div className="change-sheet-note"><Eye /><span>Все смены, относящиеся к этому пакету, подсвечены в таблице.</span></div>
                 {changeEvents.filter((change) => change.id > selectedChange.id).length > 0 && <div className="rollback-warning"><TriangleAlert /><span>При откате также будут отменены все более поздние изменения: {changeEvents.filter((change) => change.id > selectedChange.id).map((change) => `№${change.id}`).join(", ")}.</span></div>}
               </div>
-              <SheetFooter className="sheet-footer-custom"><Button variant="destructive" onClick={() => setRollbackConfirmId(selectedChange.id)}><RotateCcw />Откатить изменение</Button></SheetFooter>
+              <SheetFooter className="sheet-footer-custom"><Button variant="destructive" onClick={() => openRollbackDialog(selectedChange.id)}><RotateCcw />Откатить изменение</Button></SheetFooter>
             </>}
           </SheetContent>
         </Sheet>
 
         {rollbackTarget && (
-          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setRollbackConfirmId(null)}>
+          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeRollbackDialog()}>
             <section className="reset-dialog rollback-dialog" role="alertdialog" aria-modal="true" aria-labelledby="rollback-dialog-title" aria-describedby="rollback-dialog-description">
               <span className="reset-dialog-icon"><TriangleAlert /></span>
               <h2 id="rollback-dialog-title">Откатить изменение №{rollbackTarget.id}?</h2>
               <p id="rollback-dialog-description">Будут отменены {rollbackTarget.changes.length} {rollbackTarget.changes.length === 1 ? "перестановка" : rollbackTarget.changes.length < 5 ? "перестановки" : "перестановок"}. График вернётся к состоянию до применения этого изменения.</p>
               {rollbackLaterChanges.length > 0 && <div className="rollback-dialog-warning"><TriangleAlert /><span>Также будут отменены последующие изменения: {rollbackLaterChanges.map((change) => `№${change.id}`).join(", ")}.</span></div>}
               <div className="reset-dialog-actions">
-                <Button variant="outline" autoFocus onClick={() => setRollbackConfirmId(null)}>Отмена</Button>
+                <Button variant="outline" autoFocus onClick={closeRollbackDialog}>Отмена</Button>
                 <Button variant="destructive" onClick={() => rollbackChange(rollbackTarget.id)}><RotateCcw />Откатить изменение</Button>
               </div>
             </section>
