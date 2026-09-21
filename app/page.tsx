@@ -28,6 +28,7 @@ import {
   Users,
   UserX,
   WandSparkles,
+  X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -560,6 +561,87 @@ function NavButton({ label, icon: Icon, active, expanded }: {
   return <Tooltip><TooltipTrigger asChild>{button}</TooltipTrigger><TooltipContent side="right" sideOffset={10}>{label}{comingSoon && " · Будет позже"}</TooltipContent></Tooltip>;
 }
 
+function ScheduleOptionsList({
+  options,
+  selectedOptionKey,
+  expandedOptionKey,
+  focusedPreviewShiftId,
+  schedule,
+  period,
+  onChoose,
+  onToggleDetails,
+  onFocusShift,
+}: {
+  options: ScheduleOption[];
+  selectedOptionKey: string;
+  expandedOptionKey: string;
+  focusedPreviewShiftId: string | null;
+  schedule: Shift[];
+  period: Period;
+  onChoose: (option: ScheduleOption) => void;
+  onToggleDetails: (key: string) => void;
+  onFocusShift: (shiftId: string) => void;
+}) {
+  return (
+    <div className="options-list">
+      <p className="options-intro">Все варианты закрывают смены и проходят обязательные проверки. Нажмите на вариант, чтобы увидеть его в таблице.</p>
+      {options.map((option, index) => {
+        const selected = option.key === selectedOptionKey;
+        const expanded = option.key === expandedOptionKey;
+        const affectedEmployeeIds = new Set(option.metrics.changes.flatMap((change) => [change.fromEmployeeId, change.toEmployeeId]));
+        const affectedPeople = PEOPLE.filter((person) => affectedEmployeeIds.has(employeeIdByName[person]));
+        return (
+          <article key={option.key} className={cn("option-card", selected && "option-card-selected")}>
+            <button type="button" className="option-main" onClick={() => onChoose(option)}>
+              <span className="option-title">Вариант {index + 1}{index === 0 && <em><WandSparkles />Лучший</em>}</span>
+              <span className="option-compact"><span>Изменено: <strong>{option.metrics.changedCount} смен</strong></span><span>Затронуто: <strong>{option.metrics.affectedEmployeeCount} сотрудника</strong></span></span>
+            </button>
+            <button type="button" className="details-toggle" onClick={() => onToggleDetails(expanded ? "" : option.key)}>{expanded ? "Скрыть подробности" : "Подробнее"}<ChevronRight className={cn(expanded && "rotate-90")} /></button>
+            {expanded && (
+              <div className="option-details">
+                <h4>Перестановки</h4>
+                {option.metrics.changes.map((change) => <button type="button" className={cn("change-line", focusedPreviewShiftId === change.shiftId && "change-line-active")} key={change.shiftId} onClick={() => onFocusShift(change.shiftId)}><span>{changeDateLabel(change.shiftId)}</span><strong>{employeeNameById[change.fromEmployeeId]} → {employeeNameById[change.toEmployeeId]}</strong><ChevronRight /></button>)}
+                <h4>Влияние на сотрудников</h4>
+                <div className="employee-impact-list">
+                  {affectedPeople.map((person) => {
+                    const employeeId = employeeIdByName[person];
+                    const before = personStats(person, schedule, period);
+                    const after = personStats(person, option.schedule, period);
+                    const workDelta = after.hours - before.hours;
+                    const restDelta = after.restHours - before.restHours;
+                    const fullOffDelta = after.fullOffHours - before.fullOffHours;
+                    const blocks = option.metrics.hours[employeeId]?.blocks ?? [];
+                    const maxBlock = blocks.reduce((maximum, block) => Math.max(maximum, block.length), 0);
+                    return (
+                      <div className="employee-impact-card" key={employeeId}>
+                        <div className="employee-impact-head">
+                          <strong>{person}</strong>
+                          <span className={workDelta > 0 ? "work-increase" : workDelta < 0 ? "work-decrease" : "no-change"}>{signedHours(workDelta)} рабочих</span>
+                        </div>
+                        <div className="employee-impact-grid">
+                          <div><span>Рабочие часы</span><strong>{before.hours} → {after.hours}</strong><small>за выбранный месяц</small></div>
+                          <div><span>Часы полных выходных</span><strong>{before.fullOffHours} → {after.fullOffHours}</strong><small className={fullOffDelta > 0 ? "rest-increase" : fullOffDelta < 0 ? "rest-decrease" : "no-change"}>{signedHours(fullOffDelta)} · {before.fullOffDays} → {after.fullOffDays} дней</small></div>
+                          <div><span>Все свободные часы</span><strong>{before.restHours} → {after.restHours}</strong><small className={restDelta > 0 ? "rest-increase" : restDelta < 0 ? "rest-decrease" : "no-change"}>{signedHours(restDelta)}</small></div>
+                          <div><span>День / ночь</span><strong>{before.dayCount}/{before.nightCount} → {after.dayCount}/{after.nightCount}</strong><small>количество смен</small></div>
+                          <div><span>Всего смен</span><strong>{before.total} → {after.total}</strong><small>с началом в месяце</small></div>
+                          <div><span>Пары выходных</span><strong>{before.offPairs} → {after.offPairs}</strong><small>минимум 2</small></div>
+                          <div><span>Макс. рабочий блок</span><strong>{maxBlock} смен</strong><small>допустимо до 4</small></div>
+                          <div><span>Отклонение от плана</span><strong className={after.delta > 0 ? "positive-delta" : after.delta < 0 ? "negative-delta" : "no-change"}>{signedHours(after.delta)}</strong><small>после перестановки</small></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="checks-box"><CheckCircle2 /><span>Покрытие 24/7, отдых 12 часов, блоки до 4 смен, две пары выходных и 42 часа отдыха в неделю соблюдены.</span></div>
+              </div>
+            )}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function Home() {
   const scheduleScrollRef = useRef<HTMLDivElement>(null);
   const calculationAbortRef = useRef<AbortController | null>(null);
@@ -573,6 +655,7 @@ export default function Home() {
   const [options, setOptions] = useState<ScheduleOption[]>([]);
   const [selectedOptionKey, setSelectedOptionKey] = useState("");
   const [expandedOptionKey, setExpandedOptionKey] = useState("");
+  const [focusedPreviewShiftId, setFocusedPreviewShiftId] = useState<string | null>(null);
   const [calculationError, setCalculationError] = useState("");
   const [calculating, setCalculating] = useState(false);
   const [historyCount, setHistoryCount] = useState(0);
@@ -729,14 +812,18 @@ export default function Home() {
     if (!resetConfirmOpen && !newMonthConfirmOpen && !cancelDraftConfirmOpen && rollbackConfirmId === null) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (rollbackConfirmId !== null) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
         setResetConfirmOpen(false);
         setNewMonthConfirmOpen(false);
         setCancelDraftConfirmOpen(false);
         setRollbackConfirmId(null);
       }
     };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
+    window.addEventListener("keydown", closeOnEscape, { capture: true });
+    return () => window.removeEventListener("keydown", closeOnEscape, { capture: true });
   }, [cancelDraftConfirmOpen, newMonthConfirmOpen, resetConfirmOpen, rollbackConfirmId]);
 
   function openWorkflow(shift: ShiftSelection, nextWorkflow: Exclude<Workflow, null>) {
@@ -747,6 +834,7 @@ export default function Home() {
     setOptions([]);
     setSelectedOptionKey("");
     setExpandedOptionKey("");
+    setFocusedPreviewShiftId(null);
     setCalculationError("");
     setPreviewSchedule(null);
     setPendingChange(null);
@@ -757,6 +845,16 @@ export default function Home() {
     }
   }
 
+  function scrollToPreviewShift(shiftId: string) {
+    const [date] = shiftId.split(":");
+    const targetDate = new Date(`${date}T00:00:00Z`);
+    if (Number.isNaN(targetDate.getTime())) return;
+    const dayIndex = Math.max(0, targetDate.getUTCDate() - 1);
+    const targetLeft = Math.max(0, dayIndex * (DAY_WIDTH + 1) - DAY_WIDTH);
+    setFocusedPreviewShiftId(shiftId);
+    scheduleScrollRef.current?.scrollTo({ left: targetLeft, behavior: "smooth" });
+  }
+
   function closeWorkflow() {
     calculationAbortRef.current?.abort();
     calculationAbortRef.current = null;
@@ -765,10 +863,20 @@ export default function Home() {
     setOptions([]);
     setSelectedOptionKey("");
     setExpandedOptionKey("");
+    setFocusedPreviewShiftId(null);
     setCalculationError("");
     setPreviewSchedule(null);
     setPendingChange(null);
   }
+
+  useEffect(() => {
+    if (!options.length) return;
+    const closePreviewOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeWorkflow();
+    };
+    window.addEventListener("keydown", closePreviewOnEscape);
+    return () => window.removeEventListener("keydown", closePreviewOnEscape);
+  }, [options.length]);
 
   function openEmployeeAbsence(person: Person) {
     setSelectedEmployee(person);
@@ -781,6 +889,7 @@ export default function Home() {
     setOptions([]);
     setSelectedOptionKey("");
     setExpandedOptionKey("");
+    setFocusedPreviewShiftId(null);
     setCalculationError("");
     setPreviewSchedule(null);
     setPendingChange(null);
@@ -824,10 +933,11 @@ export default function Home() {
     const scheduleShift = displaySchedule.find((item) => item.id === shiftIdFor(period, startDay, kind));
     const changed = Boolean(scheduleShift && scheduleShift.employeeId !== scheduleShift.plannedEmployeeId);
     const highlightedByChange = Boolean(scheduleShift && selectedChangeId !== null && changeEvents.find((change) => change.id === selectedChangeId)?.changes.some((change) => change.shiftId === scheduleShift.id));
+    const focusedPreviewChange = Boolean(scheduleShift && focusedPreviewShiftId === scheduleShift.id);
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" className={cn("shift-segment", kind === "day" ? "shift-day" : "shift-night", segment === "left" && "segment-left", segment === "right" && "segment-right", changed && "shift-changed", highlightedByChange && "shift-history-highlighted")} aria-label={`${person}. ${kind === "day" ? "Дневная" : "Ночная"} смена: ${longLabel}`} title={longLabel}>
+          <button type="button" className={cn("shift-segment", kind === "day" ? "shift-day" : "shift-night", segment === "left" && "segment-left", segment === "right" && "segment-right", changed && "shift-changed", highlightedByChange && "shift-history-highlighted", focusedPreviewChange && "shift-preview-focused")} aria-label={`${person}. ${kind === "day" ? "Дневная" : "Ночная"} смена: ${longLabel}`} title={longLabel}>
             <span>{kind === "day" ? "Д" : "Н"}</span>
           </button>
         </DropdownMenuTrigger>
@@ -940,7 +1050,10 @@ export default function Home() {
       }
       setOptions(result.options);
       setSelectedOptionKey(result.recommendedKey);
-      setPreviewSchedule(result.options[0].schedule);
+      const recommended = result.options.find((option) => option.key === result.recommendedKey) ?? result.options[0];
+      setPreviewSchedule(recommended.schedule);
+      const firstChangeId = recommended.metrics.changes[0]?.shiftId;
+      if (firstChangeId) window.requestAnimationFrame(() => scrollToPreviewShift(firstChangeId));
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setOptions([]);
@@ -957,6 +1070,8 @@ export default function Home() {
   function chooseOption(option: ScheduleOption) {
     setSelectedOptionKey(option.key);
     setPreviewSchedule(option.schedule);
+    const firstChangeId = option.metrics.changes[0]?.shiftId;
+    if (firstChangeId) window.requestAnimationFrame(() => scrollToPreviewShift(firstChangeId));
   }
 
   function applySelectedOption() {
@@ -989,6 +1104,7 @@ export default function Home() {
     setOptions([]);
     setSelectedOptionKey("");
     setExpandedOptionKey("");
+    setFocusedPreviewShiftId(null);
     setSelectedChangeId(null);
     setRollbackConfirmId(null);
   }
@@ -1407,6 +1523,8 @@ export default function Home() {
   const generationBoundaryLeft = NAME_WIDTH + 1 + GENERATION_SEED_DAYS * (DAY_WIDTH + 1);
   const selectedStats = selectedEmployee ? personStats(selectedEmployee, displaySchedule, period) : null;
   const selectedChange = selectedChangeId === null ? null : changeEvents.find((change) => change.id === selectedChangeId) ?? null;
+  const rollbackTarget = rollbackConfirmId === null ? null : changeEvents.find((change) => change.id === rollbackConfirmId) ?? null;
+  const rollbackLaterChanges = rollbackTarget ? changeEvents.filter((change) => change.id > rollbackTarget.id) : [];
   const storedMonthKeys = Object.keys(monthStore.months).sort();
   const selectedMonthIndex = storedMonthKeys.indexOf(selectedMonthKey);
   const previousMonthKey = selectedMonthIndex > 0 ? storedMonthKeys[selectedMonthIndex - 1] : null;
@@ -1425,7 +1543,7 @@ export default function Home() {
 
   return (
     <TooltipProvider>
-      <div className="app-shell">
+      <div className={cn("app-shell", workflow !== null && options.length > 0 && "schedule-preview-active")}>
         <aside className={cn("sidebar", sidebarExpanded ? "sidebar-open" : "sidebar-closed")}>
           <div className="sidebar-brand">
             <div className="brand-mark" aria-hidden="true"><CalendarDays className="size-5" /></div>
@@ -1643,14 +1761,28 @@ export default function Home() {
                 </div>
                 <div className="change-sheet-note"><Eye /><span>Все смены, относящиеся к этому пакету, подсвечены в таблице.</span></div>
                 {changeEvents.filter((change) => change.id > selectedChange.id).length > 0 && <div className="rollback-warning"><TriangleAlert /><span>При откате также будут отменены все более поздние изменения: {changeEvents.filter((change) => change.id > selectedChange.id).map((change) => `№${change.id}`).join(", ")}.</span></div>}
-                {rollbackConfirmId === selectedChange.id && <div className="rollback-inline-confirm"><strong>Подтвердите откат</strong>График вернётся к состоянию до изменения {selectedChange.id}.{changeEvents.some((change) => change.id > selectedChange.id) ? " Более поздние изменения также будут отменены." : ""}</div>}
               </div>
-              <SheetFooter className="sheet-footer-custom">{rollbackConfirmId === selectedChange.id ? <><Button variant="outline" onClick={() => setRollbackConfirmId(null)}>Отмена</Button><Button variant="destructive" onClick={() => rollbackChange(selectedChange.id)}><RotateCcw />Подтвердить откат</Button></> : <Button variant="destructive" onClick={() => setRollbackConfirmId(selectedChange.id)}><RotateCcw />Откатить изменение</Button>}</SheetFooter>
+              <SheetFooter className="sheet-footer-custom"><Button variant="destructive" onClick={() => setRollbackConfirmId(selectedChange.id)}><RotateCcw />Откатить изменение</Button></SheetFooter>
             </>}
           </SheetContent>
         </Sheet>
 
-        <Sheet open={workflow !== null} onOpenChange={(open) => !open && closeWorkflow()}>
+        {rollbackTarget && (
+          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setRollbackConfirmId(null)}>
+            <section className="reset-dialog rollback-dialog" role="alertdialog" aria-modal="true" aria-labelledby="rollback-dialog-title" aria-describedby="rollback-dialog-description">
+              <span className="reset-dialog-icon"><TriangleAlert /></span>
+              <h2 id="rollback-dialog-title">Откатить изменение №{rollbackTarget.id}?</h2>
+              <p id="rollback-dialog-description">Будут отменены {rollbackTarget.changes.length} {rollbackTarget.changes.length === 1 ? "перестановка" : rollbackTarget.changes.length < 5 ? "перестановки" : "перестановок"}. График вернётся к состоянию до применения этого изменения.</p>
+              {rollbackLaterChanges.length > 0 && <div className="rollback-dialog-warning"><TriangleAlert /><span>Также будут отменены последующие изменения: {rollbackLaterChanges.map((change) => `№${change.id}`).join(", ")}.</span></div>}
+              <div className="reset-dialog-actions">
+                <Button variant="outline" autoFocus onClick={() => setRollbackConfirmId(null)}>Отмена</Button>
+                <Button variant="destructive" onClick={() => rollbackChange(rollbackTarget.id)}><RotateCcw />Откатить изменение</Button>
+              </div>
+            </section>
+          </div>
+        )}
+
+        <Sheet open={workflow !== null && options.length === 0} onOpenChange={(open) => { if (!open && options.length === 0) closeWorkflow(); }}>
           <SheetContent className="workflow-sheet sm:max-w-[480px]">
             <SheetHeader className="sheet-header-custom">
               <SheetTitle className="text-xl">{calculating ? "Расчёт вариантов" : options.length ? "Варианты графика" : workflow === "remove" ? "Убрать сотрудника со смены" : "Заменить сотрудника"}</SheetTitle>
@@ -1742,6 +1874,37 @@ export default function Home() {
             </SheetFooter>
           </SheetContent>
         </Sheet>
+
+        {workflow !== null && options.length > 0 && (
+          <>
+            <div className="schedule-preview-shade" aria-hidden="true" />
+            <aside className="schedule-preview-panel" role="dialog" aria-modal="false" aria-labelledby="schedule-preview-title">
+              <button type="button" className="schedule-preview-close" onClick={closeWorkflow} aria-label="Закрыть предпросмотр"><X /></button>
+              <div className="sheet-header-custom schedule-preview-header">
+                <h2 id="schedule-preview-title">Варианты графика</h2>
+                <p>{selectedShift ? `${selectedShift.person} · ${shiftLabel(selectedShift, period)}` : `${selectedEmployee ?? "Сотрудник"} · указанный период`}</p>
+                <small>График на фоне можно прокручивать. Нажмите на перестановку в подробностях, чтобы перейти к ней.</small>
+              </div>
+              <div className="sheet-body schedule-preview-body">
+                <ScheduleOptionsList
+                  options={options}
+                  selectedOptionKey={selectedOptionKey}
+                  expandedOptionKey={expandedOptionKey}
+                  focusedPreviewShiftId={focusedPreviewShiftId}
+                  schedule={schedule}
+                  period={period}
+                  onChoose={chooseOption}
+                  onToggleDetails={setExpandedOptionKey}
+                  onFocusShift={scrollToPreviewShift}
+                />
+              </div>
+              <div className="sheet-footer-custom schedule-preview-footer">
+                <Button variant="outline" onClick={() => { setOptions([]); setPreviewSchedule(null); setFocusedPreviewShiftId(null); }}>Назад</Button>
+                <Button className="calculate-button" onClick={applySelectedOption}>Применить вариант</Button>
+              </div>
+            </aside>
+          </>
+        )}
 
         {newMonthConfirmOpen && (
           <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setNewMonthConfirmOpen(false)}>
