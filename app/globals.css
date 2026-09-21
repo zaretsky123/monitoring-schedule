@@ -370,6 +370,7 @@ button { font: inherit; }
 .calculation-spinner svg { animation: calculation-spin .8s linear infinite; }
 .calculation-loading h3 { margin: 16px 0 6px; color: #2f3c50; font-size: 16px; }
 .calculation-loading p { max-width: 330px; margin: 0; color: #7c889a; font-size: 12px; line-height: 1.55; }
+.calculation-loading small { max-width: 330px; margin-top: 10px; color: #9aa5b4; font-size: 10px; line-height: 1.45; }
 .sheet-footer-custom { flex-direction: row; justify-content: flex-end; padding: 16px 26px 22px; border-top: 1px solid #e6ebf1; }
 .calculate-button { background: #1976d2; }
 .reset-dialog-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgba(25,34,48,.42); backdrop-filter: blur(3px); animation: reset-backdrop-in .15s ease-out; }
