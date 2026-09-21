@@ -13,7 +13,6 @@ import {
   History,
   LockKeyhole,
   Loader2,
-  Menu,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -594,7 +593,6 @@ function ScheduleOptionsList({
 }) {
   return (
     <div className="options-list">
-      <p className="options-intro">Все варианты закрывают смены и проходят обязательные проверки. Нажмите на вариант, чтобы увидеть его в таблице.</p>
       {options.map((option, index) => {
         const selected = option.key === selectedOptionKey;
         const expanded = option.key === expandedOptionKey;
@@ -1666,7 +1664,6 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="schedule-footer"><span><Menu />{scheduleStatus === "draft" ? `Заполните первые ${GENERATION_SEED_DAYS} дней до голубой линии; рассчитанную часть можно изменить вручную` : "Для действий нажмите на нужную смену"}</span><span>Таблица прокручивается по горизонтали</span></div>
             </section>
 
             <section className="summary-grid" aria-label="Сводка графика">
@@ -1694,7 +1691,7 @@ export default function Home() {
                 </div>
               ) : generationOptions.length ? (
                 <div className="generation-results">
-                  <div className="generation-success"><CheckCircle2 /><span><strong>Найдено допустимое продолжение</strong><small>Выберите вариант и проверьте его в основной таблице.</small></span></div>
+                  <div className="generation-success"><CheckCircle2 /><span><strong>Найдено допустимое продолжение</strong></span></div>
                   <div className="generation-option-list">
                     {generationOptions.map((option, index) => {
                       const selected = option.key === selectedGenerationKey;
@@ -1773,7 +1770,6 @@ export default function Home() {
                 <div className="change-sheet-list">
                   {selectedChange.changes.map((change) => <div key={change.shiftId}><span>{changeDateLabel(change.shiftId)}</span><strong>{employeeNameById[change.fromEmployeeId]} → {employeeNameById[change.toEmployeeId]}</strong></div>)}
                 </div>
-                <div className="change-sheet-note"><Eye /><span>Все смены, относящиеся к этому пакету, подсвечены в таблице.</span></div>
                 {changeEvents.filter((change) => change.id > selectedChange.id).length > 0 && <div className="rollback-warning"><TriangleAlert /><span>При откате также будут отменены все более поздние изменения: {changeEvents.filter((change) => change.id > selectedChange.id).map((change) => `№${change.id}`).join(", ")}.</span></div>}
               </div>
               <SheetFooter className="sheet-footer-custom"><Button variant="destructive" onClick={() => setRollbackConfirmId(selectedChange.id)}><RotateCcw />Откатить изменение</Button></SheetFooter>
@@ -1811,11 +1807,9 @@ export default function Home() {
                   <span className="calculation-spinner"><Loader2 className="animate-spin" aria-hidden="true" /></span>
                   <h3>Подбираем лучшие варианты…</h3>
                   <p>Проверяем покрытие смен, интервалы отдыха, рабочие блоки и обязательные выходные.</p>
-                  <small>Длительный расчёт можно остановить кнопкой ниже или крестиком.</small>
                 </div>
               ) : options.length ? (
                 <div className="options-list">
-                  <p className="options-intro">Все варианты закрывают смены и проходят обязательные проверки. Нажмите на вариант, чтобы увидеть его в таблице.</p>
                   {options.map((option, index) => {
                     const selected = option.key === selectedOptionKey;
                     const expanded = option.key === expandedOptionKey;
@@ -1881,7 +1875,7 @@ export default function Home() {
                   <div className="form-section"><h3>Причина</h3><Select value={reason} onValueChange={setReason}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="absence">Неявка</SelectItem><SelectItem value="sickday">Sick day</SelectItem><SelectItem value="medical">Больничный</SelectItem><SelectItem value="vacation">Отпуск</SelectItem><SelectItem value="other">Другое</SelectItem></SelectContent></Select></div>
                 </>
               ) : (
-                <div className="form-section"><h3>Кто выйдет на смену</h3><Select value={replacement} onValueChange={setReplacement}><SelectTrigger className="w-full"><SelectValue placeholder="Выберите сотрудника" /></SelectTrigger><SelectContent>{PEOPLE.filter((person) => person !== selectedShift?.person).map((person) => <SelectItem value={person} key={person}>{person}</SelectItem>)}</SelectContent></Select><div className="replacement-note">Система проверит выбранную замену и при необходимости предложит перестановки до конца месяца.</div></div>
+                <div className="form-section"><h3>Кто выйдет на смену</h3><Select value={replacement} onValueChange={setReplacement}><SelectTrigger className="w-full"><SelectValue placeholder="Выберите сотрудника" /></SelectTrigger><SelectContent>{PEOPLE.filter((person) => person !== selectedShift?.person).map((person) => <SelectItem value={person} key={person}>{person}</SelectItem>)}</SelectContent></Select></div>
               )}
             </div>
 
@@ -1899,7 +1893,6 @@ export default function Home() {
               <div className="sheet-header-custom schedule-preview-header">
                 <h2 id="schedule-preview-title">Варианты графика</h2>
                 <p>{selectedShift ? `${selectedShift.person} · ${shiftLabel(selectedShift, period)}` : `${selectedEmployee ?? "Сотрудник"} · указанный период`}</p>
-                <small>График на фоне можно прокручивать. Нажмите на перестановку в подробностях, чтобы перейти к ней.</small>
               </div>
               <div className="sheet-body schedule-preview-body">
                 <ScheduleOptionsList
