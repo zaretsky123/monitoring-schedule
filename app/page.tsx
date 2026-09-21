@@ -1015,12 +1015,10 @@ export default function Home() {
   }
 
   function openRollbackDialog(changeId: number) {
-    setSelectedChangeId(null);
     setRollbackConfirmId(changeId);
   }
 
   function closeRollbackDialog() {
-    if (rollbackConfirmId !== null) setSelectedChangeId(rollbackConfirmId);
     setRollbackConfirmId(null);
   }
 
@@ -1660,7 +1658,7 @@ export default function Home() {
           </SheetContent>
         </Sheet>
 
-        <Sheet open={Boolean(selectedChange)} onOpenChange={(open) => { if (!open) setSelectedChangeId(null); }}>
+        <Sheet modal={false} open={Boolean(selectedChange)} onOpenChange={(open) => { if (!open) setSelectedChangeId(null); }}>
           <SheetContent className="change-sheet sm:max-w-[440px]">
             {selectedChange && <>
               <SheetHeader className="sheet-header-custom"><div className="sheet-avatar change-sheet-avatar"><History /></div><SheetTitle className="text-xl">Изменение {selectedChange.id}</SheetTitle><SheetDescription>{changeStartLabel(selectedChange.start)} · применён вариант {selectedChange.optionNumber}</SheetDescription></SheetHeader>
