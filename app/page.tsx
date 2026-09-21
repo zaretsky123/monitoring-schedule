@@ -277,19 +277,41 @@ function signedHours(value: number) {
   return `${value > 0 ? "+" : ""}${value} ч`;
 }
 
-function runScheduleWorker<Result>(request: WorkerRequest) {
+function runScheduleWorker<Result>(request: WorkerRequest, signal?: AbortSignal) {
   return new Promise<Result>((resolve, reject) => {
     const workerUrl = new URL("workers/schedule-worker.js", document.baseURI);
     const worker = new Worker(workerUrl, { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ type: "result"; result: unknown } | { type: "error"; message: string }>) => {
+    let settled = false;
+
+    const cleanup = () => {
       worker.terminate();
+      signal?.removeEventListener("abort", handleAbort);
+    };
+    const handleAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new DOMException("Расчёт отменён", "AbortError"));
+    };
+
+    worker.onmessage = (event: MessageEvent<{ type: "result"; result: unknown } | { type: "error"; message: string }>) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       if (event.data.type === "error") reject(new Error(event.data.message));
       else resolve(event.data.result as Result);
     };
     worker.onerror = () => {
-      worker.terminate();
+      if (settled) return;
+      settled = true;
+      cleanup();
       reject(new Error("Фоновый расчёт завершился с ошибкой"));
     };
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+    signal?.addEventListener("abort", handleAbort, { once: true });
     worker.postMessage(request);
   });
 }
@@ -540,6 +562,8 @@ function NavButton({ label, icon: Icon, active, expanded }: {
 
 export default function Home() {
   const scheduleScrollRef = useRef<HTMLDivElement>(null);
+  const calculationAbortRef = useRef<AbortController | null>(null);
+  const generationAbortRef = useRef<AbortController | null>(null);
   const [selectedMonthKey, setSelectedMonthKey] = useState("2026-10");
   const [monthStore, setMonthStore] = useState<PersistedMonthStore>({ version: 1, selectedMonthKey: "2026-10", months: {} });
   const [schedule, setSchedule] = useState<Shift[]>(() => createOctober2026Schedule());
@@ -637,6 +661,11 @@ export default function Home() {
     return () => scrollContainer.removeEventListener("wheel", handleWheel);
   }, []);
 
+  useEffect(() => () => {
+    calculationAbortRef.current?.abort();
+    generationAbortRef.current?.abort();
+  }, []);
+
   useEffect(() => {
     try {
       const storedRaw = window.localStorage.getItem(MONTHS_STORAGE_KEY);
@@ -729,7 +758,9 @@ export default function Home() {
   }
 
   function closeWorkflow() {
-    if (calculating) return;
+    calculationAbortRef.current?.abort();
+    calculationAbortRef.current = null;
+    setCalculating(false);
     setWorkflow(null);
     setOptions([]);
     setSelectedOptionKey("");
@@ -887,6 +918,8 @@ export default function Home() {
     });
     setCalculationError("");
     setCalculating(true);
+    const calculationController = new AbortController();
+    calculationAbortRef.current = calculationController;
 
     try {
       const result = await runScheduleWorker<RearrangeWorkerResult>({
@@ -897,7 +930,7 @@ export default function Home() {
         recalculationStart: target.start,
         requiredAssignments,
         maxOptions: 3,
-      });
+      }, calculationController.signal);
 
       if (!result.found) {
         setOptions([]);
@@ -909,11 +942,15 @@ export default function Home() {
       setSelectedOptionKey(result.recommendedKey);
       setPreviewSchedule(result.options[0].schedule);
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       setOptions([]);
       setPreviewSchedule(null);
       setCalculationError(error instanceof Error ? error.message : "Не удалось рассчитать варианты");
     } finally {
-      setCalculating(false);
+      if (calculationAbortRef.current === calculationController) {
+        calculationAbortRef.current = null;
+        setCalculating(false);
+      }
     }
   }
 
@@ -1084,7 +1121,9 @@ export default function Home() {
   }
 
   function closeGenerator() {
-    if (generating) return;
+    generationAbortRef.current?.abort();
+    generationAbortRef.current = null;
+    setGenerating(false);
     setGeneratorOpen(false);
     setGenerationError("");
     setGenerationOptions([]);
@@ -1099,6 +1138,8 @@ export default function Home() {
     setGenerationOptions([]);
     setSelectedGenerationKey("");
     setGenerationPreview(null);
+    const generationController = new AbortController();
+    generationAbortRef.current = generationController;
     try {
       const result = await runScheduleWorker<GenerationWorkerResult>({
         action: "generate",
@@ -1108,7 +1149,7 @@ export default function Home() {
         seedDays: GENERATION_SEED_DAYS,
         mode: generationMode,
         maxOptions: 3,
-      });
+      }, generationController.signal);
       if (!result.found) {
         setGenerationError(result.reason);
         return;
@@ -1117,9 +1158,13 @@ export default function Home() {
       setSelectedGenerationKey(result.recommendedKey);
       setGenerationPreview(result.options[0].schedule);
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       setGenerationError(error instanceof Error ? error.message : "Не удалось продолжить график");
     } finally {
-      setGenerating(false);
+      if (generationAbortRef.current === generationController) {
+        generationAbortRef.current = null;
+        setGenerating(false);
+      }
     }
   }
 
@@ -1554,7 +1599,7 @@ export default function Home() {
               )}
             </div>
             <SheetFooter className="sheet-footer-custom">
-              {generating ? <><Button variant="outline" disabled>Отмена</Button><Button disabled><Loader2 className="animate-spin" />Идёт расчёт…</Button></> : generationOptions.length ? <><Button variant="outline" onClick={() => { setGenerationOptions([]); setSelectedGenerationKey(""); setGenerationPreview(null); setGenerationError(""); }}>Назад</Button><Button onClick={applyGeneratedSchedule}><CheckCircle2 />Применить продолжение</Button></> : <><Button variant="outline" onClick={closeGenerator}>Отмена</Button><Button onClick={calculateGeneratedSchedule}><WandSparkles />Рассчитать</Button></>}
+              {generating ? <><Button variant="outline" onClick={closeGenerator}>Остановить расчёт</Button><Button disabled><Loader2 className="animate-spin" />Идёт расчёт…</Button></> : generationOptions.length ? <><Button variant="outline" onClick={() => { setGenerationOptions([]); setSelectedGenerationKey(""); setGenerationPreview(null); setGenerationError(""); }}>Назад</Button><Button onClick={applyGeneratedSchedule}><CheckCircle2 />Применить продолжение</Button></> : <><Button variant="outline" onClick={closeGenerator}>Отмена</Button><Button onClick={calculateGeneratedSchedule}><WandSparkles />Рассчитать</Button></>}
             </SheetFooter>
           </SheetContent>
         </Sheet>
@@ -1618,6 +1663,7 @@ export default function Home() {
                   <span className="calculation-spinner"><Loader2 className="animate-spin" aria-hidden="true" /></span>
                   <h3>Подбираем лучшие варианты…</h3>
                   <p>Проверяем покрытие смен, интервалы отдыха, рабочие блоки и обязательные выходные.</p>
+                  <small>Длительный расчёт можно остановить кнопкой ниже или крестиком.</small>
                 </div>
               ) : options.length ? (
                 <div className="options-list">
@@ -1692,7 +1738,7 @@ export default function Home() {
             </div>
 
             <SheetFooter className="sheet-footer-custom">
-              {calculating ? <><Button variant="outline" disabled>Отмена</Button><Button className="calculate-button" disabled><Loader2 className="animate-spin" aria-hidden="true" />Идёт расчёт…</Button></> : options.length ? <><Button variant="outline" onClick={() => { setOptions([]); setPreviewSchedule(null); }}>Назад</Button><Button className="calculate-button" onClick={applySelectedOption}>Применить вариант</Button></> : <><Button variant="outline" onClick={closeWorkflow}>Отмена</Button>{!calculationError && <Button className="calculate-button" onClick={calculateOptions} disabled={workflow === "replace" && !replacement}>{workflow === "remove" ? "Рассчитать варианты" : "Проверить замену"}</Button>}</>}
+              {calculating ? <><Button variant="outline" onClick={closeWorkflow}>Остановить расчёт</Button><Button className="calculate-button" disabled><Loader2 className="animate-spin" aria-hidden="true" />Идёт расчёт…</Button></> : options.length ? <><Button variant="outline" onClick={() => { setOptions([]); setPreviewSchedule(null); }}>Назад</Button><Button className="calculate-button" onClick={applySelectedOption}>Применить вариант</Button></> : <><Button variant="outline" onClick={closeWorkflow}>Отмена</Button>{!calculationError && <Button className="calculate-button" onClick={calculateOptions} disabled={workflow === "replace" && !replacement}>{workflow === "remove" ? "Рассчитать варианты" : "Проверить замену"}</Button>}</>}
             </SheetFooter>
           </SheetContent>
         </Sheet>
