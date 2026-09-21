@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   CheckCircle2,
@@ -539,6 +539,7 @@ function NavButton({ label, icon: Icon, active, expanded }: {
 }
 
 export default function Home() {
+  const scheduleScrollRef = useRef<HTMLDivElement>(null);
   const [selectedMonthKey, setSelectedMonthKey] = useState("2026-10");
   const [monthStore, setMonthStore] = useState<PersistedMonthStore>({ version: 1, selectedMonthKey: "2026-10", months: {} });
   const [schedule, setSchedule] = useState<Shift[]>(() => createOctober2026Schedule());
@@ -607,6 +608,34 @@ export default function Home() {
     () => validateSchedule({ schedule: contextualSchedule, employees: EMPLOYEES, period, absences: activeAbsences }),
     [activeAbsences, contextualSchedule, period],
   );
+
+  useEffect(() => {
+    const scrollContainer = scheduleScrollRef.current;
+    if (!scrollContainer) return;
+
+    function handleWheel(event: WheelEvent) {
+      const container = scheduleScrollRef.current;
+      if (!container) return;
+      if (event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) || event.deltaY === 0) return;
+
+      const pixels = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? event.deltaY * 18
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? event.deltaY * container.clientWidth
+          : event.deltaY;
+      const maxScrollLeft = container.scrollWidth - container.clientWidth;
+      const canScrollHorizontally = pixels > 0
+        ? container.scrollLeft < maxScrollLeft - 1
+        : container.scrollLeft > 1;
+
+      if (!canScrollHorizontally) return;
+      event.preventDefault();
+      container.scrollLeft += pixels;
+    }
+
+    scrollContainer.addEventListener("wheel", handleWheel, { passive: false });
+    return () => scrollContainer.removeEventListener("wheel", handleWheel);
+  }, []);
 
   useEffect(() => {
     try {
@@ -1419,7 +1448,7 @@ export default function Home() {
                 </div>
               )}
 
-              <div className="schedule-scroll" tabIndex={0} aria-label={`График за ${monthGenitive}`}>
+              <div ref={scheduleScrollRef} className="schedule-scroll" tabIndex={0} aria-label={`График за ${monthGenitive}`}>
                 <div className={cn("schedule-grid", changeMarkers.length > 0 && "schedule-grid-with-markers")} style={gridStyle}>
                   {scheduleStatus === "draft" && <div className="generation-boundary" style={{ left: generationBoundaryLeft }} aria-label={`Граница ручного заполнения после ${GENERATION_SEED_DAYS} числа`}><span>Автозаполнение с {GENERATION_SEED_DAYS + 1} числа</span><i /></div>}
                   {changeMarkers.length > 0 && <div className="change-markers-layer" aria-label="Применённые изменения">
