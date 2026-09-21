@@ -322,6 +322,8 @@ button { font: inherit; }
 .change-sheet-note svg,.rollback-warning svg { width: 16px; flex: 0 0 16px; margin-top: 1px; }
 .rollback-dialog-warning { display: flex; align-items: flex-start; gap: 9px; margin: 16px 0 0; padding: 11px; border-radius: 9px; color: #91535a; background: #fff1f2; font-size: 11px; line-height: 1.5; }
 .rollback-dialog-warning svg { width: 16px; flex: 0 0 16px; margin-top: 1px; }
+.rollback-dialog [data-slot="alert-dialog-title"] { margin: 16px 0 7px; color: #283548; font-size: 19px; line-height: 1.25; letter-spacing: -.015em; }
+.rollback-dialog [data-slot="alert-dialog-description"] { margin: 0; color: #748095; font-size: 13px; line-height: 1.55; }
 .rollback-inline-confirm { margin-top: 14px; padding: 13px; border: 1px solid #efc9cd; border-radius: 10px; color: #843f47; background: #fff7f7; font-size: 12px; line-height: 1.5; }
 .rollback-inline-confirm strong { display: block; margin-bottom: 3px; color: #76343c; font-size: 13px; }
 .form-section + .form-section { margin-top: 25px; }
