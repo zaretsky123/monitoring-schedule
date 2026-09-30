@@ -742,6 +742,12 @@ export default function Home() {
   const [customEnd, setCustomEnd] = useState("2026-10-03T20:00");
   const [storageReady, setStorageReady] = useState(false);
   const [cloudOpen, setCloudOpen] = useState(false);
+  const [accessStatus, setAccessStatus] = useState<"checking" | "signed-out" | "authorized" | "forbidden">("checking");
+  const [authEpoch, setAuthEpoch] = useState(0);
+  const [loginPassword, setLoginPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const [cloudStatus, setCloudStatus] = useState<"checking" | "signed-out" | "choose" | "connected" | "saving" | "error" | "conflict">("checking");
   const [cloudMessage, setCloudMessage] = useState("");
   const [cloudEmail, setCloudEmail] = useState("");
@@ -900,12 +906,14 @@ export default function Home() {
         if (cancelled) return;
         if (authError && authError.name !== "AuthSessionMissingError") throw authError;
         if (!data.user) {
+          setAccessStatus("signed-out");
           setCloudStatus("signed-out");
           return;
         }
         const workspace = await getOrCreateWorkspace();
         const remote = await loadScheduleSnapshot<PersistedMonthStore>(workspace.id);
         if (cancelled) return;
+        setAccessStatus("authorized");
         setCloudUserEmail(data.user.email ?? "");
         setCloudWorkspaceId(workspace.id);
         setCloudRemote(remote);
@@ -916,13 +924,29 @@ export default function Home() {
         }
       } catch (error) {
         if (cancelled) return;
+        setAccessStatus("forbidden");
         setCloudMessage(error instanceof Error ? error.message : "Не удалось подключиться к Supabase");
         setCloudStatus("error");
       }
     }
     void checkCloud();
     return () => { cancelled = true; };
-  }, [storageReady]);
+  }, [storageReady, authEpoch]);
+
+  useEffect(() => {
+    const client = getSupabaseBrowserClient();
+    if (!client) return;
+    const { data: { subscription } } = client.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") {
+        setCloudEnabled(false);
+        setCloudWorkspaceId("");
+        setCloudUserEmail("");
+        setCloudOpen(false);
+        setAccessStatus("signed-out");
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
     if (!cloudEnabled || !cloudWorkspaceId || !storageReady) return;
@@ -1000,13 +1024,52 @@ export default function Home() {
     event.preventDefault();
     const client = getSupabaseBrowserClient();
     if (!client) return;
+    setAuthBusy(true);
     setCloudStatus("checking");
     const { error } = await client.auth.signInWithOtp({
       email: cloudEmail.trim(),
-      options: { emailRedirectTo: window.location.href.split("?")[0].split("#")[0] },
+      options: { shouldCreateUser: false, emailRedirectTo: window.location.href.split("?")[0].split("#")[0] },
     });
     setCloudMessage(error ? error.message : "Ссылка для входа отправлена на почту. Откройте её в этом браузере.");
     setCloudStatus(error ? "error" : "signed-out");
+    setAuthBusy(false);
+  }
+
+  async function signInWithPassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const client = getSupabaseBrowserClient();
+    if (!client) return;
+    setAuthBusy(true);
+    setCloudMessage("");
+    const { error } = await client.auth.signInWithPassword({ email: cloudEmail.trim(), password: loginPassword });
+    setLoginPassword("");
+    setAuthBusy(false);
+    if (error) {
+      setCloudMessage("Не удалось войти. Проверьте почту и пароль.");
+      return;
+    }
+    setAccessStatus("checking");
+    setAuthEpoch((value) => value + 1);
+  }
+
+  async function setAdminPassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (newPassword.length < 12) {
+      setCloudMessage("Пароль должен содержать не менее 12 символов.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setCloudMessage("Пароли не совпадают.");
+      return;
+    }
+    const client = getSupabaseBrowserClient();
+    if (!client) return;
+    setAuthBusy(true);
+    const { error } = await client.auth.updateUser({ password: newPassword });
+    setNewPassword("");
+    setConfirmPassword("");
+    setAuthBusy(false);
+    setCloudMessage(error ? error.message : "Пароль установлен. В следующий раз войдите с почтой и паролем.");
   }
 
   async function signOutCloud() {
@@ -1016,6 +1079,8 @@ export default function Home() {
     setCloudRemote(null);
     setCloudUserEmail("");
     setCloudStatus("signed-out");
+    setAccessStatus("signed-out");
+    setCloudOpen(false);
     setCloudMessage("Локальная копия графиков осталась в этом браузере.");
   }
 
@@ -1767,6 +1832,32 @@ export default function Home() {
     });
   }, [changeEvents, dayCount, period]);
 
+  if (isSupabaseConfigured() && accessStatus !== "authorized") {
+    return <main className="access-page">
+      <section className="access-card">
+        <div className="access-icon"><LockKeyhole /></div>
+        <h1>Мониторинг</h1>
+        <p>Доступ к графику администратора</p>
+        {accessStatus === "checking" ? <p role="status">Проверяем вход…</p> : accessStatus === "forbidden" ? <>
+          <p role="alert">Не удалось подтвердить доступ к графику. {cloudMessage}</p>
+          <Button variant="outline" onClick={() => { setAccessStatus("checking"); setAuthEpoch((value) => value + 1); }}>Повторить проверку</Button>
+          <Button variant="outline" onClick={signOutCloud}>Выйти</Button>
+        </> : <>
+          <form onSubmit={signInWithPassword} className="access-form">
+            <label>Логин<input value="admin" readOnly aria-label="Логин" /></label>
+            <label>Почта администратора<input type="email" autoComplete="username" required value={cloudEmail} onChange={(event) => setCloudEmail(event.target.value)} /></label>
+            <label>Пароль<input type="password" autoComplete="current-password" required value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></label>
+            <Button type="submit" disabled={authBusy}>{authBusy ? "Входим…" : "Войти"}</Button>
+          </form>
+          <details className="access-recovery"><summary>Первый вход или забыли пароль?</summary>
+            <form onSubmit={sendCloudLogin}><p>Введите почту администратора выше. Отправим ссылку для входа, после чего можно установить пароль.</p><Button type="submit" variant="outline" disabled={authBusy || !cloudEmail.trim()}>Получить ссылку</Button></form>
+          </details>
+          {cloudMessage && <p role="status" className="access-message">{cloudMessage}</p>}
+        </>}
+      </section>
+    </main>;
+  }
+
   return (
     <TooltipProvider>
       <div className={cn("app-shell", workflow !== null && options.length > 0 && "schedule-preview-active")}>
@@ -1955,7 +2046,7 @@ export default function Home() {
             <div className="sheet-body cloud-sheet-body">
               {cloudUserEmail && <p className="cloud-account">Аккаунт: <strong>{cloudUserEmail}</strong></p>}
               {cloudStatus === "checking" && <p>Проверяем подключение…</p>}
-              {(cloudStatus === "signed-out" || (cloudStatus === "error" && !cloudWorkspaceId)) && <form onSubmit={sendCloudLogin} className="cloud-login-form"><label>Электронная почта<input required type="email" value={cloudEmail} onChange={(event) => setCloudEmail(event.target.value)} placeholder="you@example.com" /></label><Button type="submit">Получить ссылку для входа</Button></form>}
+              {cloudUserEmail && <form onSubmit={setAdminPassword} className="cloud-login-form"><label>Установить или изменить пароль<input type="password" autoComplete="new-password" minLength={12} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="Не менее 12 символов" /></label><label>Повторите пароль<input type="password" autoComplete="new-password" required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label><Button type="submit" variant="outline" disabled={authBusy}>Сохранить пароль</Button></form>}
               {cloudStatus === "choose" && (cloudRemote ? <div className="cloud-choice"><p>В облаке уже есть графики. Скачайте копию данных этого браузера перед открытием облачной версии.</p><Button variant="outline" onClick={downloadLocalBackup}>Скачать локальную копию</Button><Button onClick={() => loadCloudStore(cloudRemote)}>Открыть графики из облака</Button></div> : <div className="cloud-choice"><p>В облаке пока нет графиков. Перенесём все месяцы, исходные планы и историю изменений из этого браузера.</p><Button onClick={importLocalStore}>Перенести мои графики</Button></div>)}
               {(cloudStatus === "connected" || cloudStatus === "saving") && <div className="cloud-choice"><p>{cloudStatus === "saving" ? "Сохраняем изменения…" : "Графики сохраняются автоматически после изменений."}</p><small>Локальная копия также остаётся в браузере.</small></div>}
               {cloudStatus === "conflict" && <div className="cloud-choice"><p>Автоматическое сохранение остановлено. Облачный график мог измениться в другой вкладке. Текущие правки остались в этом браузере.</p><Button variant="outline" onClick={async () => { try { const remote = await loadScheduleSnapshot<PersistedMonthStore>(cloudWorkspaceId); setCloudRemote(remote); setCloudStatus("choose"); setCloudMessage(""); } catch (error) { setCloudMessage(error instanceof Error ? error.message : "Не удалось загрузить данные"); } }}>Проверить облачную версию</Button></div>}

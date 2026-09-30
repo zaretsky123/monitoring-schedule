@@ -299,6 +299,21 @@ button { font: inherit; }
 .cloud-login-form input { height: 40px; padding: 0 11px; border: 1px solid #d7e1eb; border-radius: 8px; outline-color: #2782ce; }
 .cloud-choice small { color: #8290a1; }
 .cloud-message { padding: 10px 12px; border-radius: 8px; background: #fff6e8; color: #8f631f; overflow-wrap: anywhere; }
+.access-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f2f6fa; color: #26364d; }
+.access-card { width: min(100%, 420px); padding: 32px; border: 1px solid #e0e8f0; border-radius: 20px; background: #fff; box-shadow: 0 16px 50px #21405b12; }
+.access-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 13px; background: #e8f4fe; color: #1677c2; }
+.access-icon svg { width: 23px; height: 23px; }
+.access-card h1 { margin: 18px 0 4px; font-size: 25px; font-weight: 650; }
+.access-card p { color: #68798c; font-size: 14px; line-height: 1.55; }
+.access-form { display: grid; gap: 14px; margin-top: 22px; }
+.access-form label { display: grid; gap: 7px; color: #47596d; font-size: 13px; }
+.access-form input { width: 100%; height: 43px; padding: 0 12px; border: 1px solid #ccd9e5; border-radius: 9px; background: #fff; outline-color: #2887d1; }
+.access-form input[readonly] { background: #f4f7fa; color: #64758a; }
+.access-form button { margin-top: 6px; }
+.access-recovery { margin-top: 22px; font-size: 13px; color: #2879b4; }
+.access-recovery summary { cursor: pointer; }
+.access-recovery form { display: grid; gap: 8px; }
+.access-message { padding: 10px 12px; border-radius: 8px; background: #fff6e8; }
 .coefficient-summary { margin-top: 14px; border: 1px solid #dce9f5; border-radius: 11px; background: #f8fbff; }
 .coefficient-summary summary,.coefficient-impact summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
 .coefficient-summary summary::-webkit-details-marker,.coefficient-impact summary::-webkit-details-marker { display: none; }
