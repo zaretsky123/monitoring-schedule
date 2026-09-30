@@ -288,6 +288,20 @@ button { font: inherit; }
 .detail-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 2px; border-bottom: 1px solid #edf0f4; color: #69758a; font-size: 13px; }
 .detail-line strong { color: #344156; font-size: 13px; }
 .detail-line strong small { color: #8a95a5; font-size: 10px; font-weight: 500; }
+.coefficient-summary { margin-top: 14px; border: 1px solid #dce9f5; border-radius: 11px; background: #f8fbff; }
+.coefficient-summary summary,.coefficient-impact summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
+.coefficient-summary summary::-webkit-details-marker,.coefficient-impact summary::-webkit-details-marker { display: none; }
+.coefficient-summary summary { min-height: 52px; padding: 12px; font-size: 12px; }
+.coefficient-summary summary > span:first-child { color: #596a7e; }
+.coefficient-summary summary > strong { margin-left: auto; color: #24435e; font-size: 15px; }
+.coefficient-more { display: inline-flex; align-items: center; gap: 2px; color: #2478b7; font-size: 11px; }
+.coefficient-more svg,.coefficient-impact summary > svg { width: 14px; height: 14px; transition: transform .2s ease; }
+.coefficient-summary[open] .coefficient-more svg,.coefficient-impact[open] summary > svg { transform: rotate(90deg); }
+.coefficient-breakdown,.coefficient-comparison { border-top: 1px solid #e2ebf4; padding: 5px 12px 10px; }
+.coefficient-breakdown > div,.coefficient-comparison > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-top: 9px; color: #738298; font-size: 11px; }
+.coefficient-breakdown strong,.coefficient-comparison strong { color: #344156; font-size: 11px; text-align: right; }
+.coefficient-breakdown-total { margin-top: 7px; border-top: 1px solid #e2ebf4; }
+.coefficient-unavailable { margin-top: 12px; padding: 10px 12px; border-radius: 8px; color: #866326; background: #fff8e8; font-size: 11px; }
 .action-list { display: flex; flex-direction: column; gap: 7px; margin-top: 22px; }
 .action-list button { min-height: 62px; display: grid; grid-template-columns: 23px 1fr 18px; align-items: center; gap: 11px; padding: 10px 12px; border: 1px solid #e4e9ef; border-radius: 11px; color: #506078; background: #fff; text-align: left; cursor: pointer; }
 .action-list button:hover { border-color: #c9ddee; background: #f7fbfe; }
@@ -375,6 +389,13 @@ button { font: inherit; }
 .no-change { color: #647184; background: #eef2f6; }
 .employee-impact-grid small.rest-increase { color: #32704a; }
 .employee-impact-grid small.rest-decrease { color: #a86415; }
+.coefficient-impact { border-top: 1px solid #edf1f5; }
+.coefficient-impact summary { flex-wrap: wrap; min-height: 48px; padding: 9px 11px; font-size: 11px; }
+.coefficient-impact summary > span { color: #7b8798; }
+.coefficient-impact summary > strong { margin-left: auto; color: #334156; font-size: 12px; }
+.coefficient-impact summary small { color: #62788f; font-size: 10px; }
+.coefficient-impact summary > svg { color: #94a4b6; }
+.coefficient-comparison { background: #f8fbfe; }
 .checks-box { display: flex; align-items: flex-start; gap: 8px; margin-top: 16px; padding: 10px; border-radius: 9px; color: #3b7351; background: #edf8f1; font-size: 11px; line-height: 1.45; }
 .checks-box svg { width: 16px; flex: 0 0 16px; margin-top: 1px; }
 .calculation-error { min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }

@@ -11,6 +11,7 @@
     "build": "pnpm worker:build && next build",
     "build:pages": "pnpm worker:build && next build",
     "test:algorithm": "pnpm worker:build && node scripts/test-schedule.mjs",
+    "test:coefficients": "pnpm worker:build && node scripts/test-coefficients.mjs",
     "start": "next start"
   },
   "dependencies": {

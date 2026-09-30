@@ -93,6 +93,7 @@ import {
   EMPLOYEES,
 } from "@/lib/schedule/sample";
 import { lifecycleLabel, lifecycleStatus } from "@/lib/schedule/month";
+import { coefficientHoursForEmployee, type CoefficientHours } from "@/lib/schedule/coefficients";
 import { countMonthlyFullOffDays, countMonthlyOffPairs, findWorkBlock, validateSchedule } from "@/lib/schedule/validator";
 import type { Absence, Employee, GeneratedScheduleOption, GenerationMode, Period, ScheduleOption, Shift, ShiftChange, StoredScheduleStatus } from "@/lib/schedule/types";
 
@@ -620,6 +621,8 @@ function ScheduleOptionsList({
                     const fullOffDelta = after.fullOffHours - before.fullOffHours;
                     const blocks = option.metrics.hours[employeeId]?.blocks ?? [];
                     const maxBlock = blocks.reduce((maximum, block) => Math.max(maximum, block.length), 0);
+                    const beforeCoefficients = coefficientHoursForEmployee(schedule, employeeId, period);
+                    const afterCoefficients = coefficientHoursForEmployee(option.schedule, employeeId, period);
                     return (
                       <div className="employee-impact-card" key={employeeId}>
                         <div className="employee-impact-head">
@@ -636,6 +639,7 @@ function ScheduleOptionsList({
                           <div><span>Макс. рабочий блок</span><strong>{maxBlock} смен</strong><small>допустимо до 4</small></div>
                           <div><span>Отклонение от плана</span><strong className={after.delta > 0 ? "positive-delta" : after.delta < 0 ? "negative-delta" : "no-change"}>{signedHours(after.delta)}</strong><small>после перестановки</small></div>
                         </div>
+                        <CoefficientImpact before={beforeCoefficients} after={afterCoefficients} year={period.year} />
                       </div>
                     );
                   })}
@@ -647,6 +651,39 @@ function ScheduleOptionsList({
         );
       })}
     </div>
+  );
+}
+
+const coefficientNumber = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 });
+
+function formatCoefficient(value: number) {
+  return `${coefficientNumber.format(value)}x`;
+}
+
+function CoefficientBreakdown({ hours }: { hours: CoefficientHours }) {
+  return (
+    <div className="coefficient-breakdown">
+      <div><span>Обычные часы · 1x</span><strong>{coefficientNumber.format(hours.regularHours)} ч · {formatCoefficient(hours.regularHours)}</strong></div>
+      <div><span>Ночные часы · 1,2x</span><strong>{coefficientNumber.format(hours.nightHours)} ч · {formatCoefficient(hours.nightHours * 1.2)}</strong></div>
+      <div><span>Праздничные часы · 2x</span><strong>{coefficientNumber.format(hours.holidayHours)} ч · {formatCoefficient(hours.holidayHours * 2)}</strong></div>
+      <div className="coefficient-breakdown-total"><span>Оплачиваемых часов</span><strong>{coefficientNumber.format(hours.payableHours)} ч</strong></div>
+    </div>
+  );
+}
+
+function CoefficientImpact({ before, after, year }: { before: CoefficientHours | null; after: CoefficientHours | null; year: number }) {
+  if (!before || !after) return <div className="coefficient-unavailable">Часы с коэффициентами: календарь праздников за {year} год ещё не загружен.</div>;
+  const difference = after.weightedHours - before.weightedHours;
+  return (
+    <details className="coefficient-impact">
+      <summary><span>Часы с коэффициентами</span><strong>{formatCoefficient(before.weightedHours)} → {formatCoefficient(after.weightedHours)} <small>({difference > 0 ? "+" : ""}{formatCoefficient(difference)})</small></strong><ChevronRight /></summary>
+      <div className="coefficient-comparison">
+        <div><span>Обычные · 1x</span><strong>{coefficientNumber.format(before.regularHours)} → {coefficientNumber.format(after.regularHours)} ч</strong></div>
+        <div><span>Ночные · 1,2x</span><strong>{coefficientNumber.format(before.nightHours)} → {coefficientNumber.format(after.nightHours)} ч</strong></div>
+        <div><span>Праздничные · 2x</span><strong>{coefficientNumber.format(before.holidayHours)} → {coefficientNumber.format(after.holidayHours)} ч</strong></div>
+        <div><span>Оплачиваемых часов</span><strong>{coefficientNumber.format(before.payableHours)} → {coefficientNumber.format(after.payableHours)} ч</strong></div>
+      </div>
+    </details>
   );
 }
 
@@ -710,6 +747,10 @@ export default function Home() {
   const contextualSchedule = useMemo(
     () => mergeAdjacentContext(displaySchedule, monthStore.months, selectedMonthKey, period),
     [displaySchedule, monthStore.months, period, selectedMonthKey],
+  );
+  const baseContextualSchedule = useMemo(
+    () => mergeAdjacentContext(schedule, monthStore.months, selectedMonthKey, period),
+    [schedule, monthStore.months, period, selectedMonthKey],
   );
   const hasAppliedChanges = useMemo(
     () => schedule.some((shift) => shift.employeeId !== shift.plannedEmployeeId),
@@ -1530,6 +1571,7 @@ export default function Home() {
   const draftGenerationStarted = assignedFutureDraftShifts > 0;
   const generationBoundaryLeft = NAME_WIDTH + 1 + GENERATION_SEED_DAYS * (DAY_WIDTH + 1);
   const selectedStats = selectedEmployee ? personStats(selectedEmployee, displaySchedule, period) : null;
+  const selectedCoefficients = selectedEmployee ? coefficientHoursForEmployee(contextualSchedule, employeeIdByName[selectedEmployee], period) : null;
   const selectedChange = selectedChangeId === null ? null : changeEvents.find((change) => change.id === selectedChangeId) ?? null;
   const rollbackTarget = rollbackConfirmId === null ? null : changeEvents.find((change) => change.id === rollbackConfirmId) ?? null;
   const rollbackLaterChanges = rollbackTarget ? changeEvents.filter((change) => change.id > rollbackTarget.id) : [];
@@ -1735,6 +1777,12 @@ export default function Home() {
               <SheetHeader className="sheet-header-custom"><div className="sheet-avatar"><UserRound /></div><SheetTitle className="text-xl">{selectedEmployee}</SheetTitle><SheetDescription>Показатели за {monthGenitive}</SheetDescription></SheetHeader>
               <div className="sheet-body">
                 <div className="employee-stats"><div><strong>{selectedStats.total}</strong><span>смен</span></div><div><strong>{selectedStats.hours}</strong><span>часов</span></div><div><strong>{selectedStats.dayCount}</strong><span>дневных</span></div><div><strong>{selectedStats.nightCount}</strong><span>ночных</span></div></div>
+                {selectedCoefficients ? (
+                  <details className="coefficient-summary">
+                    <summary><span>Часы с коэффициентами</span><strong>{formatCoefficient(selectedCoefficients.weightedHours)}</strong><span className="coefficient-more">Подробнее <ChevronRight /></span></summary>
+                    <CoefficientBreakdown hours={selectedCoefficients} />
+                  </details>
+                ) : <div className="coefficient-unavailable">Часы с коэффициентами: календарь праздников за {period.year} год ещё не загружен.</div>}
                 <div className="detail-line"><span>Часы полных выходных</span><strong>{selectedStats.fullOffHours} часов <small>({selectedStats.fullOffDays} дней)</small></strong></div>
                 <div className="detail-line"><span>Все свободные от смен часы</span><strong>{selectedStats.restHours} часов</strong></div>
                 <div className="detail-line"><span>Рабочие часы по плану</span><strong>{selectedStats.planned} часов</strong></div>
@@ -1837,6 +1885,8 @@ export default function Home() {
                                 const fullOffDelta = after.fullOffHours - before.fullOffHours;
                                 const blocks = option.metrics.hours[employeeId]?.blocks ?? [];
                                 const maxBlock = blocks.reduce((maximum, block) => Math.max(maximum, block.length), 0);
+                                const beforeCoefficients = coefficientHoursForEmployee(baseContextualSchedule, employeeId, period);
+                                const afterCoefficients = coefficientHoursForEmployee(option.schedule, employeeId, period);
                                 return (
                                   <div className="employee-impact-card" key={employeeId}>
                                     <div className="employee-impact-head">
@@ -1853,6 +1903,7 @@ export default function Home() {
                                       <div><span>Макс. рабочий блок</span><strong>{maxBlock} смен</strong><small>допустимо до 4</small></div>
                                       <div><span>Отклонение от плана</span><strong className={after.delta > 0 ? "positive-delta" : after.delta < 0 ? "negative-delta" : "no-change"}>{signedHours(after.delta)}</strong><small>после перестановки</small></div>
                                     </div>
+                                    <CoefficientImpact before={beforeCoefficients} after={afterCoefficients} year={period.year} />
                                   </div>
                                 );
                               })}
@@ -1900,7 +1951,7 @@ export default function Home() {
                   selectedOptionKey={selectedOptionKey}
                   expandedOptionKey={expandedOptionKey}
                   focusedPreviewShiftId={focusedPreviewShiftId}
-                  schedule={schedule}
+                  schedule={baseContextualSchedule}
                   period={period}
                   onChoose={chooseOption}
                   onToggleDetails={setExpandedOptionKey}

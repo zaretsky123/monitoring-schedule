@@ -6,6 +6,8 @@ const projectRoot = process.cwd();
 const outputDir = path.join(projectRoot, "public", "workers");
 const sources = [
   ["lib/schedule/calendar.ts", "calendar.js"],
+  ["lib/schedule/holidays.ts", "holidays.js"],
+  ["lib/schedule/coefficients.ts", "coefficients.js"],
   ["lib/schedule/validator.ts", "validator.js"],
   ["lib/schedule/solver.ts", "solver.js"],
   ["lib/schedule/generator.ts", "generator.js"],
