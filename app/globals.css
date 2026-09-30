@@ -88,6 +88,7 @@ button { font: inherit; }
 .nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .nav-coming-label { margin-left: auto; padding: 3px 5px; border-radius: 5px; color: #8490a0; background: #edf0f4; font-size: 9px; font-weight: 700; line-height: 1; }
 .sidebar-closed .nav-button,.sidebar-closed .collapse-button { justify-content: center; padding: 0; }
+.sidebar-closed .account-nav-button { justify-content: center; padding: 0; }
 .sidebar-bottom { margin-top: auto; padding: 12px; border-top: 1px solid #eef1f5; }
 .collapse-button svg { width: 19px; }
 
@@ -471,6 +472,7 @@ button { font: inherit; }
   .sidebar-brand { padding-inline: 15px; }
   .sidebar-brand > div:last-child,.sidebar .nav-button span,.sidebar .nav-coming-label,.sidebar .collapse-button span { display: none; }
   .sidebar .nav-button,.sidebar .collapse-button { justify-content: center; padding: 0; }
+  .sidebar .account-nav-button { justify-content: center; padding: 0; }
   .topbar { align-items: flex-start; padding: 13px 15px; }
   .topbar-heading h1 { font-size: 19px; }
   .topbar-actions > button:nth-child(-n+3),.profile-button { display: none; }

@@ -1872,6 +1872,9 @@ export default function Home() {
             {NAV_ITEMS.map((item) => <NavButton key={item.label} {...item} expanded={sidebarExpanded} />)}
           </nav>
           <div className="sidebar-bottom">
+            <button type="button" className="nav-button account-nav-button" onClick={() => setCloudOpen(true)} aria-label="Аккаунт администратора" title="Аккаунт администратора">
+              <UserRound className="size-[19px]" />{sidebarExpanded && <span className="nav-label">Аккаунт</span>}
+            </button>
             <NavButton label="Настройки" icon={Settings2} expanded={sidebarExpanded} />
             <button type="button" className="collapse-button" onClick={() => setSidebarExpanded((value) => !value)} aria-label={sidebarExpanded ? "Свернуть меню" : "Развернуть меню"}>
               {sidebarExpanded ? <PanelLeftClose /> : <PanelLeftOpen />}{sidebarExpanded && <span>Свернуть меню</span>}
