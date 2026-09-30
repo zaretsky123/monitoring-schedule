@@ -38,8 +38,8 @@ jobs:
       - name: Build static site
         run: pnpm build:pages
         env:
-          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_SUPABASE_URL: https://vyzoaejyvsgoevcvnpiu.supabase.co
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_adE3OLZtUn7fGGhVgwHHng_wiDxXcw3
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

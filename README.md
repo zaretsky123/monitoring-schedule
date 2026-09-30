@@ -36,10 +36,7 @@ cp .env.example .env.local
 
 Затем заполните `NEXT_PUBLIC_SUPABASE_URL` и `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` значениями из Supabase. В клиентский код нельзя добавлять secret/service_role key.
 
-Для GitHub Pages добавьте:
-
-- repository variable `NEXT_PUBLIC_SUPABASE_URL`;
-- repository variable `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+GitHub Pages получает URL проекта и publishable key из workflow. Оба значения публичны в клиентской сборке; при смене проекта или ротации ключа обновите их в `.github/workflows/deploy-pages.yml`.
 
 Publishable key попадает в статическую сборку, что является штатным режимом Supabase. Защиту реальных ФИО и графиков обеспечивают включённые RLS-политики и обязательная авторизация пользователя. Старый `NEXT_PUBLIC_SUPABASE_ANON_KEY` временно принимается для совместимости.
 
