@@ -59,7 +59,7 @@ function validateEmployeeSequence(shifts: Shift[], employeeId: string) {
     }
     if (restHours === 12) {
       blockLength += 1;
-      if (blockLength > 4) issues.push(issue("WORK_BLOCK_OVER_4", `${employeeId}: рабочий блок превышает четыре смены`, { employeeId, currentShiftId: current.id, blockLength }));
+      if (blockLength > 5) issues.push(issue("WORK_BLOCK_OVER_5", `${employeeId}: рабочий блок превышает пять смен`, { employeeId, currentShiftId: current.id, blockLength }));
       continue;
     }
     if (blockLength >= 3) {

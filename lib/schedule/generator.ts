@@ -1,6 +1,6 @@
 import { addDays, fullCalendarDaysBetween } from "./calendar";
 import { validateSchedule } from "./validator";
-import type { Employee, GeneratedScheduleOption, GenerationMode, Period, Shift } from "./types";
+import type { Absence, Employee, GeneratedScheduleOption, GenerationMode, Period, Shift } from "./types";
 
 type SearchState = {
   assignments: number[];
@@ -26,7 +26,7 @@ function transitionSequence(state: SearchState, employeeIndex: number, shift: Sh
     if (restHours < 12) return null;
     if (restHours === 12) {
       blockLength += 1;
-      if (blockLength > 4) return null;
+      if (blockLength > 5) return null;
     } else {
       if (blockLength >= 3 && fullCalendarDaysBetween(new Date(lastEnd), shift.start) < 2) return null;
       blockLength = 1;
@@ -118,6 +118,9 @@ export function generateSchedule({
   period,
   seedDays = 8,
   mode,
+  manual = false,
+  lockedEmployeeIds = [],
+  absences = [],
   maxOptions = 3,
   beamWidth = mode === "pattern" ? 4_000 : 7_000,
 }: {
@@ -126,11 +129,15 @@ export function generateSchedule({
   period: Period;
   seedDays?: number;
   mode: GenerationMode;
+  manual?: boolean;
+  lockedEmployeeIds?: string[];
+  absences?: Absence[];
   maxOptions?: number;
   beamWidth?: number;
 }) {
   const activeEmployees = employees.filter((employee) => employee.active);
   if (!activeEmployees.length) return { found: false as const, options: [], reason: "Нет активных сотрудников для формирования графика." };
+  if (manual) return generateManualSchedule(schedule, activeEmployees, period, lockedEmployeeIds, absences, maxOptions, beamWidth);
   const seedEnd = addDays(period.start, seedDays);
   const requiredSeed = schedule.filter((shift) => shift.start >= period.start && shift.start < seedEnd);
   const emptySeed = requiredSeed.filter((shift) => !shift.employeeId);
@@ -181,6 +188,7 @@ export function generateSchedule({
     const targetId = patternTargets.get(shift.id);
     for (const state of beam) {
       for (let employeeIndex = 0; employeeIndex < activeEmployees.length; employeeIndex += 1) {
+        if (lockedEmployeeIds.includes(activeEmployees[employeeIndex].id)) continue;
         const nextBlock = transitionSequence(state, employeeIndex, shift);
         if (nextBlock === null) continue;
         const next: SearchState = {
@@ -232,4 +240,105 @@ export function generateSchedule({
     };
   }
   return { found: true as const, recommendedKey: options[0].key, options };
+}
+
+function generateManualSchedule(
+  schedule: Shift[], employees: Employee[], period: Period, lockedEmployeeIds: string[], absences: Absence[], maxOptions: number, beamWidth: number,
+) {
+  const locked = new Set(lockedEmployeeIds);
+  const indexById = employeeIndexById(employees);
+  const boundary = schedule.find((shift) => shift.start < period.start && shift.end > period.start);
+  const slots = schedule.filter((shift) => (shift.start >= period.start && shift.start < period.end) || shift.id === boundary?.id)
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+  const empty = slots.filter((shift) => !shift.employeeId);
+  if (!empty.length) return { found: false as const, options: [], reason: "Все смены уже назначены вручную." };
+  for (const shift of slots) {
+    if (shift.employeeId && !indexById.has(shift.employeeId)) return { found: false as const, options: [], reason: `Смена ${shift.id} назначена сотруднику вне выбранного состава.` };
+    if (shift.employeeId && absences.some((absence) => absence.employeeId === shift.employeeId && shift.start < absence.end && shift.end > absence.start)) return { found: false as const, options: [], reason: `Смена ${shift.id} назначена сотруднику в период его недоступности.` };
+  }
+  // A regular rotation provides a complete candidate when the draft is still mostly empty.
+  // It also avoids pruning every feasible continuation by the load-only beam score.
+  if (employees.length === 4 && locked.size === 0) {
+    const dayRotation = [1, 1, 3, 3, 0, 0, 2, 2];
+    const nightRotation = [0, 2, 2, 1, 1, 3, 3, 0];
+    const rotationOptions: GeneratedScheduleOption[] = [];
+    const anchor = Date.UTC(2026, 9, 1);
+    for (let phase = 0; phase < 8; phase += 1) {
+      const assignments = new Map<string, string>();
+      for (const shift of empty) {
+        const day = Math.round((Date.UTC(shift.start.getUTCFullYear(), shift.start.getUTCMonth(), shift.start.getUTCDate()) - anchor) / 86_400_000);
+        const index = ((day + phase) % 8 + 8) % 8;
+        assignments.set(shift.id, employees[(shift.type === "D" ? dayRotation : nightRotation)[index]].id);
+      }
+      const candidate = schedule.map((shift) => {
+        const employeeId = assignments.get(shift.id);
+        return employeeId ? { ...shift, employeeId, plannedEmployeeId: employeeId } : { ...shift };
+      });
+      const validation = validateSchedule({ schedule: candidate.filter((shift) => shift.employeeId || (shift.start >= period.start && shift.start < period.end)), employees, period, absences });
+      if (!validation.valid) continue;
+      rotationOptions.push({ key: empty.map((shift) => assignments.get(shift.id)).join("|"), mode: "optimal", schedule: candidate, metrics: optionMetrics(candidate, employees, period, "optimal", new Map()) });
+    }
+    rotationOptions.sort((a, b) => a.metrics.loadSpreadHours - b.metrics.loadSpreadHours || a.key.localeCompare(b.key));
+    if (rotationOptions.length) return { found: true as const, recommendedKey: rotationOptions[0].key, options: rotationOptions.slice(0, maxOptions) };
+  }
+  const earlier = schedule.filter((shift) => shift.employeeId && shift.end <= slots[0].start)
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+  const initial: SearchState = {
+    assignments: [], lastEnds: employees.map(() => Number.NEGATIVE_INFINITY), blockLengths: employees.map(() => 0),
+    counts: employees.map(() => 0), dayCounts: employees.map(() => 0), nightCounts: employees.map(() => 0),
+    patternMismatches: 0, score: 0, tieKey: "",
+  };
+  for (const shift of earlier) {
+    const index = indexById.get(shift.employeeId);
+    if (index === undefined) continue;
+    const block = transitionSequence(initial, index, shift);
+    if (block === null) return { found: false as const, options: [], reason: `Смена ${shift.id} в предыдущем месяце нарушает правила отдыха.` };
+    initial.lastEnds[index] = shift.end.getTime();
+    initial.blockLengths[index] = block;
+  }
+  let beam = [initial];
+  for (const shift of slots) {
+    const nextStates: SearchState[] = [];
+    const candidates = shift.employeeId ? [indexById.get(shift.employeeId)!] : employees
+      .map((employee, index) => locked.has(employee.id) || absences.some((absence) => absence.employeeId === employee.id && shift.start < absence.end && shift.end > absence.start) ? -1 : index).filter((index) => index >= 0);
+    for (const state of beam) for (const index of candidates) {
+      const block = transitionSequence(state, index, shift);
+      if (block === null) continue;
+      const next: SearchState = {
+        assignments: shift.employeeId ? state.assignments : [...state.assignments, index],
+        lastEnds: [...state.lastEnds], blockLengths: [...state.blockLengths], counts: [...state.counts],
+        dayCounts: [...state.dayCounts], nightCounts: [...state.nightCounts], patternMismatches: 0, score: 0,
+        tieKey: shift.employeeId ? state.tieKey : `${state.tieKey}${index}`,
+      };
+      next.lastEnds[index] = shift.end.getTime();
+      next.blockLengths[index] = block;
+      if (shift.start >= period.start) {
+        next.counts[index] += 1;
+        if (shift.type === "D") next.dayCounts[index] += 1;
+        else next.nightCounts[index] += 1;
+      }
+      next.score = scoreState(next, "optimal");
+      nextStates.push(next);
+    }
+    nextStates.sort((a, b) => a.score - b.score || a.tieKey.localeCompare(b.tieKey));
+    beam = nextStates.slice(0, beamWidth);
+    if (!beam.length) return { found: false as const, options: [], reason: `На смене ${shift.id} нельзя продолжить график: проверьте ручные назначения и замочки сотрудников.` };
+  }
+  const options: GeneratedScheduleOption[] = [];
+  for (const state of beam) {
+    const assignmentById = new Map(empty.map((shift, index) => [shift.id, employees[state.assignments[index]].id]));
+    const candidate = schedule.map((shift) => {
+      const employeeId = assignmentById.get(shift.id);
+      return employeeId ? { ...shift, employeeId, plannedEmployeeId: employeeId } : { ...shift };
+    });
+    const validation = validateSchedule({ schedule: candidate.filter((shift) => shift.employeeId || (shift.start >= period.start && shift.start < period.end)), employees, period, absences });
+    if (!validation.valid) continue;
+    const key = empty.map((shift) => assignmentById.get(shift.id)).join("|");
+    if (options.some((option) => option.key === key)) continue;
+    options.push({ key, mode: "optimal", schedule: candidate, metrics: optionMetrics(candidate, employees, period, "optimal", new Map()) });
+    if (options.length === maxOptions) break;
+  }
+  return options.length
+    ? { found: true as const, recommendedKey: options[0].key, options }
+    : { found: false as const, options: [], reason: "При заданных назначениях и блокировках допустимый график не найден. Проверьте отдых и выходные; попробуйте снять один замочек." };
 }

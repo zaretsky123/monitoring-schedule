@@ -183,6 +183,12 @@ button { font: inherit; }
 .draft-future-locked { color: #99a7b6; }
 .employee-name { height: 70px; border: 0; display: flex; align-items: center; gap: 10px; padding: 0 14px; color: #2a3548; cursor: pointer; text-align: left; transition: background .16s ease; }
 .employee-name:hover,.employee-highlighted { background: #f0f6fb; }
+.employee-name-row { padding: 0 8px; }
+.employee-name-action { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; height: 100%; padding: 0 4px; color: inherit; text-align: left; background: transparent; cursor: pointer; }
+.employee-name-action > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.employee-lock { width: 25px; height: 28px; flex: 0 0 25px; display: grid; place-items: center; border-radius: 6px; color: #8b9aad; background: transparent; cursor: pointer; }
+.employee-lock:hover,.employee-lock-active { color: #176fb7; background: #e7f3fc; }
+.employee-lock svg { width: 16px; height: 16px; }
 .employee-avatar { width: 31px; height: 31px; flex: 0 0 31px; display: grid; place-items: center; border-radius: 10px; color: #2f6d9f; background: #e5f1fb; font-size: 12px; font-weight: 700; }
 .avatar-2 { color: #72633a; background: #f5edda; }
 .avatar-3 { color: #5c6ca1; background: #eceefd; }
@@ -197,6 +203,17 @@ button { font: inherit; }
 .draft-shift-slot:hover { color: #1976d2; border-color: #76afe0; background: #edf6fd; }
 .draft-shift-slot:focus-visible { outline: 2px solid #2c83cd; outline-offset: 1px; }
 .draft-shift-slot svg { width: 13px; }
+.draft-unavailable-slot,.draft-unavailable-slot:hover { color: #cf8b8e; border-color: #e7ced0; background: #fff4f4; cursor: not-allowed; }
+.draft-unavailable-slot svg { opacity: .35; }
+.draft-absence-panel { display: flex; flex-direction: column; gap: 9px; margin: 15px 0; padding: 13px; border: 1px solid #dfebf4; border-radius: 10px; background: #f8fbfe; }
+.draft-absence-panel > strong { color: #2d4760; font-size: 13px; }
+.draft-absence-panel p { margin: 0; color: #78879a; font-size: 11px; line-height: 1.4; }
+.draft-absence-panel label { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #526780; font-size: 11px; }
+.draft-absence-panel input { min-width: 0; padding: 6px; border: 1px solid #d7e4ef; border-radius: 6px; color: #35495e; background: #fff; font-size: 11px; }
+.draft-absence-panel .draft-absence-error { color: #b64d56; }
+.draft-absence-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; border: 1px solid #e1e8f0; border-radius: 7px; color: #4e6074; background: #fff; font-size: 11px; }
+.draft-absence-item button { display: grid; place-items: center; color: #a35b61; cursor: pointer; }
+.draft-absence-item svg { width: 14px; height: 14px; }
 .draft-left-slot { border-radius: 0 7px 7px 0; }
 .draft-right-slot { border-radius: 7px 0 0 7px; }
 .shift-day { color: #126bb3; border-color: #b9daf4; background: #dceefa; }
@@ -454,6 +471,11 @@ button { font: inherit; }
 .new-month-details { display: grid; grid-template-columns: 1.3fr .7fr 1fr; gap: 8px; margin-top: 18px; }
 .new-month-details span { display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid #e4e9ef; border-radius: 9px; color: #8a96a6; background: #fafbfd; font-size: 10px; }
 .new-month-details strong { color: #374459; font-size: 12px; }
+.new-month-modes { margin-top: 18px; }
+.new-month-employees { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 18px; }
+.new-month-employees label { display: flex; align-items: center; gap: 9px; padding: 12px; border: 1px solid #dde6ef; border-radius: 9px; color: #31425a; font-size: 13px; cursor: pointer; }
+.new-month-employees input { accent-color: #2586ce; }
+.new-month-warning { margin: 9px 0 0; color: #ae5359; font-size: 11px; }
 .reset-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 23px; }
 .cancel-draft-dialog { width: min(500px,100%); }
 .cancel-draft-dialog-actions { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); }

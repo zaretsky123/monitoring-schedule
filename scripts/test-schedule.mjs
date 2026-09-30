@@ -96,6 +96,26 @@ function assertNoAbsenceOverlap(schedule, absences) {
 const original = createSchedule();
 assert.equal(validateSchedule({ schedule: original, employees, period }).valid, true, "Исходный график должен быть допустимым");
 
+const manualHoleId = "2026-10-03:D";
+const manualDraft = original.map((shift) => shift.id === manualHoleId ? { ...shift, employeeId: "", plannedEmployeeId: "" } : { ...shift });
+const manualResult = generateSchedule({ schedule: manualDraft, employees, period, mode: "optimal", manual: true, maxOptions: 2 });
+assert.equal(manualResult.found, true, "Ручной режим должен заполнить свободную смену");
+if (manualResult.found) {
+  assert.equal(Boolean(manualResult.options[0].schedule.find((shift) => shift.id === manualHoleId)?.employeeId), true);
+  assert.equal(validateSchedule({ schedule: manualResult.options[0].schedule, employees, period }).valid, true);
+  assert.equal(manualResult.options[0].schedule.every((shift) => shift.id === manualHoleId || shift.employeeId === original.find((item) => item.id === shift.id)?.employeeId), true, "Ручные назначения должны сохраняться");
+}
+const lockedManual = generateSchedule({ schedule: manualDraft, employees, period, mode: "optimal", manual: true, lockedEmployeeIds: employees.map((employee) => employee.id) });
+assert.equal(lockedManual.found, false, "Закрытые замочки не позволяют добавить смену ни одному сотруднику");
+const missingShift = manualDraft.find((shift) => shift.id === manualHoleId);
+const unavailableManual = generateSchedule({ schedule: manualDraft, employees, period, mode: "optimal", manual: true, absences: employees.map((employee) => ({ employeeId: employee.id, start: missingShift.start, end: missingShift.end })) });
+assert.equal(unavailableManual.found, false, "Недоступного сотрудника нельзя назначить на свободную смену");
+const emptyManualDraft = original
+  .filter((shift) => shift.start >= addHours(period.start, -4) && shift.start < period.end)
+  .map((shift) => ({ ...shift, employeeId: "", plannedEmployeeId: "" }));
+const fullManualResult = generateSchedule({ schedule: emptyManualDraft, employees, period, mode: "optimal", manual: true, maxOptions: 2 });
+assert.equal(fullManualResult.found, true, "Ручной режим должен уметь заполнить пустой месяц");
+
 const generationSeedEnd = addHours(period.start, 8 * 24);
 const generationDraft = original
   .filter((shift) => shift.start < period.end && shift.end > addHours(period.start, -24))

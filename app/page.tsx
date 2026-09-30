@@ -13,6 +13,7 @@ import {
   FileSpreadsheet,
   History,
   LockKeyhole,
+  LockOpen,
   Loader2,
   Moon,
   PanelLeftClose,
@@ -130,6 +131,7 @@ const NAV_ITEMS = [
 const DAY_WIDTH = 154;
 const NAME_WIDTH = 196;
 const GENERATION_SEED_DAYS = 8;
+type DraftMode = "seed" | "manual";
 const LEGACY_STORAGE_KEY = "monitoring-schedule:october-2026:v1";
 const MONTHS_STORAGE_KEY = "monitoring-schedule:months:v1";
 const EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -140,6 +142,10 @@ type PersistedSchedule = {
   version: 1 | 2 | 3 | 4 | 5;
   historyCount: number;
   status?: StoredScheduleStatus;
+  draftMode?: DraftMode;
+  employeeIds?: string[];
+  lockedEmployeeIds?: string[];
+  draftAbsences?: PersistedAbsence[];
   schedule: Array<Omit<Shift, "start" | "end"> & { start: string; end: string }>;
   baselineSchedule?: Array<Omit<Shift, "start" | "end"> & { start: string; end: string }>;
   changeEvents?: PersistedChangeEvent[];
@@ -214,6 +220,9 @@ type GenerationWorkerRequest = {
   seedDays: number;
   mode: GenerationMode;
   maxOptions: number;
+  manual?: boolean;
+  lockedEmployeeIds?: string[];
+  absences?: Absence[];
 };
 
 type WorkerRequest = RearrangeWorkerRequest | GenerationWorkerRequest;
@@ -448,6 +457,13 @@ function restoreMonthRecord(persisted: Partial<PersistedSchedule>, period: Perio
     changeEvents: restoredEvents,
     historyCount: Math.max(persistedCount, ...restoredEvents.map((change) => change.id), 0),
     status: persisted.status === "draft" ? "draft" as const : "published" as const,
+    draftMode: persisted.draftMode === "manual" ? "manual" as const : "seed" as const,
+    employeeIds: Array.isArray(persisted.employeeIds) ? persisted.employeeIds.filter((id) => EMPLOYEES.some((employee) => employee.id === id)) : EMPLOYEES.map((employee) => employee.id),
+    lockedEmployeeIds: Array.isArray(persisted.lockedEmployeeIds) ? persisted.lockedEmployeeIds.filter((id) => EMPLOYEES.some((employee) => employee.id === id)) : [],
+    draftAbsences: (persisted.draftAbsences ?? []).flatMap((absence) => {
+      const start = new Date(absence.start), end = new Date(absence.end);
+      return start < end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) ? [{ employeeId: absence.employeeId, start, end }] : [];
+    }),
   };
 }
 
@@ -457,17 +473,29 @@ function serializeMonthRecord({
   changeEvents,
   historyCount,
   status,
+  draftMode = "seed",
+  employeeIds = EMPLOYEES.map((employee) => employee.id),
+  lockedEmployeeIds = [],
+  draftAbsences = [],
 }: {
   schedule: Shift[];
   baselineSchedule: Shift[];
   changeEvents: AppliedChange[];
   historyCount: number;
   status: StoredScheduleStatus;
+  draftMode?: DraftMode;
+  employeeIds?: string[];
+  lockedEmployeeIds?: string[];
+  draftAbsences?: Absence[];
 }): PersistedSchedule {
   return {
     version: 5,
     historyCount,
     status,
+    draftMode,
+    employeeIds,
+    lockedEmployeeIds,
+    draftAbsences: draftAbsences.map((absence) => ({ employeeId: absence.employeeId, start: absence.start.toISOString(), end: absence.end.toISOString() })),
     schedule: serializeShifts(schedule),
     baselineSchedule: serializeShifts(baselineSchedule),
     changeEvents: changeEvents.map((change) => ({
@@ -656,7 +684,7 @@ function ScheduleOptionsList({
                           <div><span>День / ночь</span><strong>{before.dayCount}/{before.nightCount} → {after.dayCount}/{after.nightCount}</strong><small>количество смен</small></div>
                           <div><span>Всего смен</span><strong>{before.total} → {after.total}</strong><small>с началом в месяце</small></div>
                           <div><span>Пары выходных</span><strong>{before.offPairs} → {after.offPairs}</strong><small>минимум 2</small></div>
-                          <div><span>Макс. рабочий блок</span><strong>{maxBlock} смен</strong><small>допустимо до 4</small></div>
+                          <div><span>Макс. рабочий блок</span><strong>{maxBlock} смен</strong><small>допустимо до 5</small></div>
                           <div><span>Отклонение от плана</span><strong className={after.delta > 0 ? "positive-delta" : after.delta < 0 ? "negative-delta" : "no-change"}>{signedHours(after.delta)}</strong><small>после перестановки</small></div>
                         </div>
                         <CoefficientImpact before={beforeCoefficients} after={afterCoefficients} year={period.year} />
@@ -664,7 +692,7 @@ function ScheduleOptionsList({
                     );
                   })}
                 </div>
-                <div className="checks-box"><CheckCircle2 /><span>Покрытие 24/7, отдых 12 часов, блоки до 4 смен, две пары выходных и 42 часа отдыха в неделю соблюдены.</span></div>
+                <div className="checks-box"><CheckCircle2 /><span>Покрытие 24/7, отдых 12 часов, блоки до 5 смен, две пары выходных и 42 часа отдыха в неделю соблюдены.</span></div>
               </div>
             )}
           </article>
@@ -716,6 +744,13 @@ export default function Home() {
   const [schedule, setSchedule] = useState<Shift[]>(() => createOctober2026Schedule());
   const [baselineSchedule, setBaselineSchedule] = useState<Shift[]>(() => createOctober2026Schedule());
   const [scheduleStatus, setScheduleStatus] = useState<StoredScheduleStatus>("published");
+  const [draftMode, setDraftMode] = useState<DraftMode>("seed");
+  const [employeeIds, setEmployeeIds] = useState<string[]>(EMPLOYEES.map((employee) => employee.id));
+  const [lockedEmployeeIds, setLockedEmployeeIds] = useState<string[]>([]);
+  const [draftAbsences, setDraftAbsences] = useState<Absence[]>([]);
+  const [absenceStart, setAbsenceStart] = useState("");
+  const [absenceEnd, setAbsenceEnd] = useState("");
+  const [absenceError, setAbsenceError] = useState("");
   const [previewSchedule, setPreviewSchedule] = useState<Shift[] | null>(null);
   const [options, setOptions] = useState<ScheduleOption[]>([]);
   const [selectedOptionKey, setSelectedOptionKey] = useState("");
@@ -759,6 +794,9 @@ export default function Home() {
   const [exporting, setExporting] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [newMonthConfirmOpen, setNewMonthConfirmOpen] = useState(false);
+  const [newMonthStep, setNewMonthStep] = useState<"mode" | "employees">("mode");
+  const [newDraftMode, setNewDraftMode] = useState<DraftMode>("seed");
+  const [newEmployeeIds, setNewEmployeeIds] = useState<string[]>(EMPLOYEES.map((employee) => employee.id));
   const [cancelDraftConfirmOpen, setCancelDraftConfirmOpen] = useState(false);
   const [draftPublishError, setDraftPublishError] = useState("");
   const [generatorOpen, setGeneratorOpen] = useState(false);
@@ -773,6 +811,8 @@ export default function Home() {
   const [newMonthNumber, setNewMonthNumber] = useState(String(initialNextMonth.month));
   const selectedMonth = parseMonthKey(selectedMonthKey) ?? { year: 2026, month: 10 };
   const period = useMemo(() => periodForMonth(selectedMonth.year, selectedMonth.month), [selectedMonth.month, selectedMonth.year]);
+  const activeEmployees = useMemo(() => EMPLOYEES.filter((employee) => employeeIds.includes(employee.id)), [employeeIds]);
+  const visiblePeople = PEOPLE.filter((person) => employeeIds.includes(employeeIdByName[person]));
   const dayCount = daysInMonth(period.year, period.month);
   const days = useMemo(() => Array.from({ length: dayCount }, (_, index) => index + 1), [dayCount]);
   const monthLabel = formatMonthLabel(period.year, period.month);
@@ -792,12 +832,12 @@ export default function Home() {
     [schedule],
   );
   const activeAbsences = useMemo(
-    () => mergeAbsences(...changeEvents.map((change) => change.absences)),
-    [changeEvents],
+    () => mergeAbsences(draftAbsences, ...changeEvents.map((change) => change.absences)),
+    [changeEvents, draftAbsences],
   );
   const currentValidation = useMemo(
-    () => validateSchedule({ schedule: contextualSchedule, employees: EMPLOYEES, period, absences: activeAbsences }),
-    [activeAbsences, contextualSchedule, period],
+    () => validateSchedule({ schedule: contextualSchedule, employees: activeEmployees, period, absences: activeAbsences }),
+    [activeAbsences, activeEmployees, contextualSchedule, period],
   );
 
   useEffect(() => {
@@ -868,6 +908,10 @@ export default function Home() {
         setSchedule(restored.schedule);
         setBaselineSchedule(restored.baselineSchedule);
         setScheduleStatus(restored.status);
+        setDraftMode(restored.draftMode);
+        setEmployeeIds(restored.employeeIds);
+        setLockedEmployeeIds(restored.lockedEmployeeIds);
+        setDraftAbsences(restored.draftAbsences);
         setChangeEvents(restored.changeEvents);
         setHistoryCount(restored.historyCount);
       }
@@ -881,7 +925,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!storageReady) return;
-    const persisted = serializeMonthRecord({ schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus });
+    const persisted = serializeMonthRecord({ schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus, draftMode, employeeIds, lockedEmployeeIds, draftAbsences });
     setMonthStore((current) => {
       const next = { ...current, selectedMonthKey, months: { ...current.months, [selectedMonthKey]: persisted } };
       try {
@@ -891,7 +935,7 @@ export default function Home() {
       }
       return next;
     });
-  }, [baselineSchedule, changeEvents, historyCount, schedule, scheduleStatus, selectedMonthKey, storageReady]);
+  }, [baselineSchedule, changeEvents, historyCount, schedule, scheduleStatus, selectedMonthKey, storageReady, draftMode, employeeIds, lockedEmployeeIds, draftAbsences]);
 
   useEffect(() => {
     if (!storageReady || !isSupabaseConfigured()) return;
@@ -985,6 +1029,10 @@ export default function Home() {
     setSchedule(synchronized.schedule);
     setBaselineSchedule(synchronized.baselineSchedule);
     setScheduleStatus(synchronized.status);
+    setDraftMode(synchronized.draftMode);
+    setEmployeeIds(synchronized.employeeIds);
+    setLockedEmployeeIds(synchronized.lockedEmployeeIds);
+    setDraftAbsences(synchronized.draftAbsences);
     setChangeEvents(synchronized.changeEvents);
     setHistoryCount(synchronized.historyCount);
     setMonthStore(remote.payload);
@@ -999,7 +1047,7 @@ export default function Home() {
     const snapshot: PersistedMonthStore = {
       ...monthStore,
       selectedMonthKey,
-      months: { ...monthStore.months, [selectedMonthKey]: serializeMonthRecord({ schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus }) },
+      months: { ...monthStore.months, [selectedMonthKey]: currentPersistedRecord() },
     };
     setCloudStatus("saving");
     try {
@@ -1050,7 +1098,7 @@ export default function Home() {
     const snapshot: PersistedMonthStore = {
       ...monthStore,
       selectedMonthKey,
-      months: { ...monthStore.months, [selectedMonthKey]: serializeMonthRecord({ schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus }) },
+      months: { ...monthStore.months, [selectedMonthKey]: currentPersistedRecord() },
     };
     const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
@@ -1212,17 +1260,19 @@ export default function Home() {
 
   function renderDraftSlot(person: Person, kind: ShiftKind, startDay: number, segment: "left" | "center" | "right") {
     if (scheduleStatus !== "draft") return null;
-    if (startDay > GENERATION_SEED_DAYS && !draftGenerationStarted) return null;
+    if (draftMode === "seed" && startDay > GENERATION_SEED_DAYS && !draftGenerationStarted) return null;
     const target = schedule.find((shift) => shift.id === shiftIdFor(period, startDay, kind));
     if (!target || target.employeeId) return null;
     const employeeId = employeeIdByName[person];
+    const unavailable = draftAbsences.some((absence) => absence.employeeId === employeeId && target.start < absence.end && target.end > absence.start);
     return (
       <button
         type="button"
-        className={cn("draft-shift-slot", kind === "day" ? "draft-day-slot" : "draft-night-slot", `draft-${segment}-slot`)}
+        className={cn("draft-shift-slot", kind === "day" ? "draft-day-slot" : "draft-night-slot", `draft-${segment}-slot`, unavailable && "draft-unavailable-slot")}
         onClick={() => assignDraftShift(target.id, employeeId)}
-        aria-label={`Назначить ${person} на ${kind === "day" ? "дневную" : "ночную"} смену`}
-        title={`Назначить ${person}`}
+        disabled={unavailable}
+        aria-label={unavailable ? `${person} недоступен в эту смену` : `Назначить ${person} на ${kind === "day" ? "дневную" : "ночную"} смену`}
+        title={unavailable ? "Сотрудник недоступен" : `Назначить ${person}`}
       ><Plus /></button>
     );
   }
@@ -1391,7 +1441,7 @@ export default function Home() {
   }
 
   function currentPersistedRecord() {
-    return serializeMonthRecord({ schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus });
+    return serializeMonthRecord({ schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus, draftMode, employeeIds, lockedEmployeeIds, draftAbsences });
   }
 
   function openStoredMonth(targetKey: string, source = monthStore) {
@@ -1412,6 +1462,10 @@ export default function Home() {
     setSchedule(restored.schedule);
     setBaselineSchedule(restored.baselineSchedule);
     setScheduleStatus(restored.status);
+    setDraftMode(restored.draftMode);
+    setEmployeeIds(restored.employeeIds);
+    setLockedEmployeeIds(restored.lockedEmployeeIds);
+    setDraftAbsences(restored.draftAbsences);
     setChangeEvents(restored.changeEvents);
     setHistoryCount(restored.historyCount);
     resetTransientView();
@@ -1421,6 +1475,9 @@ export default function Home() {
     const next = addMonths(period.year, period.month, 1);
     setNewMonthYear(String(next.year));
     setNewMonthNumber(String(next.month));
+    setNewMonthStep("mode");
+    setNewDraftMode("seed");
+    setNewEmployeeIds(EMPLOYEES.map((employee) => employee.id));
     setNewMonthConfirmOpen(true);
   }
 
@@ -1446,7 +1503,7 @@ export default function Home() {
         ? { ...shift, plannedEmployeeId: carryIn.plannedEmployeeId }
         : shift
     ));
-    const draftRecord = serializeMonthRecord({ schedule: blank, baselineSchedule: [], changeEvents: [], historyCount: 0, status: "draft" });
+    const draftRecord = serializeMonthRecord({ schedule: blank, baselineSchedule: [], changeEvents: [], historyCount: 0, status: "draft", draftMode: newDraftMode, employeeIds: newEmployeeIds, lockedEmployeeIds: [] });
     const nextStore: PersistedMonthStore = {
       version: 1,
       selectedMonthKey: targetKey,
@@ -1457,6 +1514,10 @@ export default function Home() {
     setSchedule(blank);
     setBaselineSchedule([]);
     setScheduleStatus("draft");
+    setDraftMode(newDraftMode);
+    setEmployeeIds(newEmployeeIds);
+    setLockedEmployeeIds([]);
+    setDraftAbsences([]);
     setHistoryCount(0);
     setChangeEvents([]);
     resetTransientView();
@@ -1465,6 +1526,11 @@ export default function Home() {
 
   function assignDraftShift(shiftId: string, employeeId: string) {
     if (scheduleStatus !== "draft") return;
+    const target = schedule.find((shift) => shift.id === shiftId);
+    if (target && draftAbsences.some((absence) => absence.employeeId === employeeId && target.start < absence.end && target.end > absence.start)) {
+      setDraftPublishError("Этот сотрудник недоступен в выбранную смену.");
+      return;
+    }
     setSchedule((current) => current.map((shift) => shift.id === shiftId
       ? { ...shift, employeeId, plannedEmployeeId: employeeId }
       : shift));
@@ -1479,8 +1545,25 @@ export default function Home() {
     setDraftPublishError("");
   }
 
+  function addDraftAbsence(person: Person) {
+    const start = new Date(`${absenceStart}:00Z`);
+    const end = new Date(`${absenceEnd}:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) {
+      setAbsenceError("Укажите начало и окончание периода: окончание должно быть позже начала.");
+      return;
+    }
+    const employeeId = employeeIdByName[person];
+    if (schedule.some((shift) => shift.employeeId === employeeId && shift.start < end && shift.end > start)) {
+      setAbsenceError("На этот период уже назначена смена. Сначала снимите её в графике.");
+      return;
+    }
+    setDraftAbsences((current) => mergeAbsences(current, [{ employeeId, start, end }]));
+    setAbsenceError("");
+    setDraftPublishError("");
+  }
+
   function openGenerator() {
-    setGenerationMode("pattern");
+    setGenerationMode(draftMode === "manual" ? "optimal" : "pattern");
     setGenerationError("");
     setGenerationOptions([]);
     setSelectedGenerationKey("");
@@ -1512,11 +1595,14 @@ export default function Home() {
       const result = await runScheduleWorker<GenerationWorkerResult>({
         action: "generate",
         schedule: mergeAdjacentContext(schedule, monthStore.months, selectedMonthKey, period),
-        employees: EMPLOYEES,
+        employees: activeEmployees,
         period,
         seedDays: GENERATION_SEED_DAYS,
         mode: generationMode,
         maxOptions: 3,
+        manual: draftMode === "manual",
+        lockedEmployeeIds,
+        absences: draftAbsences,
       }, generationController.signal);
       if (!result.found) {
         setGenerationError(result.reason);
@@ -1562,7 +1648,7 @@ export default function Home() {
       setDraftPublishError(`Осталось назначить ${unassigned.length} ${unassigned.length === 1 ? "смену" : "смен"}.`);
       return;
     }
-    const validation = validateSchedule({ schedule: mergeAdjacentContext(schedule, monthStore.months, selectedMonthKey, period), employees: EMPLOYEES, period });
+    const validation = validateSchedule({ schedule: mergeAdjacentContext(schedule, monthStore.months, selectedMonthKey, period), employees: activeEmployees, period, absences: draftAbsences });
     if (!validation.valid) {
       setDraftPublishError(`Нельзя закрепить график: найдено ${validation.issues.length} нарушений обязательных правил.`);
       return;
@@ -1578,6 +1664,8 @@ export default function Home() {
     if (baselineSchedule.length) {
       setSchedule(baselineSchedule.map((shift) => ({ ...shift })));
       setScheduleStatus("published");
+      setLockedEmployeeIds([]);
+      setDraftAbsences([]);
       setChangeEvents([]);
       setHistoryCount(0);
       resetTransientView();
@@ -1600,6 +1688,10 @@ export default function Home() {
         setSchedule(restored.schedule);
         setBaselineSchedule(restored.baselineSchedule);
         setScheduleStatus(restored.status);
+        setDraftMode(restored.draftMode);
+        setEmployeeIds(restored.employeeIds);
+        setLockedEmployeeIds(restored.lockedEmployeeIds);
+        setDraftAbsences(restored.draftAbsences);
         setChangeEvents(restored.changeEvents);
         setHistoryCount(restored.historyCount);
         resetTransientView();
@@ -1784,6 +1876,8 @@ export default function Home() {
   const nextMonthKey = selectedMonthIndex >= 0 && selectedMonthIndex < storedMonthKeys.length - 1 ? storedMonthKeys[selectedMonthIndex + 1] : null;
   const requestedNewMonthKey = monthKey(Number(newMonthYear), Number(newMonthNumber));
   const requestedMonthExists = Boolean(monthStore.months[requestedNewMonthKey]);
+  const requestedCarryIn = carryInAssignment(monthStore.months, Number(newMonthYear), Number(newMonthNumber));
+  const selectedCarryInMissing = Boolean(requestedCarryIn && !newEmployeeIds.includes(requestedCarryIn.employeeId));
   const changeMarkers = useMemo(() => {
     const previousPositions: number[] = [];
     return changeEvents.map((change) => {
@@ -1876,7 +1970,7 @@ export default function Home() {
           <div className="content-area">
             <section className="schedule-card" aria-labelledby="schedule-title">
               <div className="schedule-toolbar">
-                <div><h2 id="schedule-title">{scheduleStatus === "draft" ? "Черновик исходного графика" : "Расписание"}</h2><p>{scheduleStatus === "draft" ? "Нажмите на свободный сегмент в строке сотрудника, чтобы назначить смену" : "Дневная смена 08:00–20:00 · ночная смена 20:00–08:00"}</p></div>
+                <div><h2 id="schedule-title">{scheduleStatus === "draft" ? "Черновик исходного графика" : "Расписание"}</h2><p>{scheduleStatus === "draft" ? draftMode === "manual" ? "Ручной режим · назначайте смены в любом порядке" : "Нажмите на свободный сегмент в строке сотрудника, чтобы назначить смену" : "Дневная смена 08:00–20:00 · ночная смена 20:00–08:00"}</p></div>
                 <div className="toolbar-right">
                   {focusPerson && <button className="focus-chip" onClick={() => setFocusPerson(null)}>Показан {focusPerson}<span>Сбросить</span></button>}
                   <div className="legend" aria-label="Обозначения смен"><span><Sun />День</span><span><Moon />Ночь</span></div>
@@ -1885,36 +1979,38 @@ export default function Home() {
 
               {scheduleStatus === "draft" && (
                 <div className={cn("draft-progress", draftPublishError && "draft-progress-error")}>
-                  <div><WandSparkles /><span><strong>{draftGenerationStarted ? `${assignedMonthShifts} из ${monthShifts.length} смен месяца назначено` : `Первые ${assignedGenerationSeedShifts} из ${generationSeedShifts.length} смен заполнены`}</strong><small>{!boundaryShiftAssigned ? "Назначьте ночную смену, входящую в первое число месяца" : draftGenerationStarted ? "Продолжение рассчитано — его можно корректировать вручную" : `Заполните 1–${GENERATION_SEED_DAYS} числа, затем продолжите график автоматически`}</small></span></div>
+                  <div><WandSparkles /><span><strong>{draftMode === "manual" || draftGenerationStarted ? `${assignedMonthShifts} из ${monthShifts.length} смен месяца назначено` : `Первые ${assignedGenerationSeedShifts} из ${generationSeedShifts.length} смен заполнены`}</strong><small>{draftMode === "manual" ? "Ваши назначения сохранятся при автоматическом заполнении остальных смен" : !boundaryShiftAssigned ? "Назначьте ночную смену, входящую в первое число месяца" : draftGenerationStarted ? "Продолжение рассчитано — его можно корректировать вручную" : `Заполните 1–${GENERATION_SEED_DAYS} числа, затем продолжите график автоматически`}</small></span></div>
                   <div className="draft-progress-actions">
                     {draftPublishError && <p><TriangleAlert />{draftPublishError}</p>}
-                    <Button type="button" size="sm" onClick={openGenerator} disabled={!generationSeedReady || generating}><WandSparkles />{draftGenerationStarted ? "Пересчитать" : "Рассчитать продолжение"}</Button>
+                    <Button type="button" size="sm" onClick={openGenerator} disabled={draftMode === "manual" ? assignedMonthShifts === monthShifts.length || generating : !generationSeedReady || generating}><WandSparkles />{draftMode === "manual" ? "Заполнить свободные смены" : draftGenerationStarted ? "Пересчитать" : "Рассчитать продолжение"}</Button>
                   </div>
                 </div>
               )}
 
               <div ref={scheduleScrollRef} className="schedule-scroll" tabIndex={0} aria-label={`График за ${monthGenitive}`}>
                 <div className={cn("schedule-grid", changeMarkers.length > 0 && "schedule-grid-with-markers")} style={gridStyle}>
-                  {scheduleStatus === "draft" && <div className="generation-boundary" style={{ left: generationBoundaryLeft }} aria-label={`Граница ручного заполнения после ${GENERATION_SEED_DAYS} числа`}><span>Автозаполнение с {GENERATION_SEED_DAYS + 1} числа</span><i /></div>}
+                  {scheduleStatus === "draft" && draftMode === "seed" && <div className="generation-boundary" style={{ left: generationBoundaryLeft }} aria-label={`Граница ручного заполнения после ${GENERATION_SEED_DAYS} числа`}><span>Автозаполнение с {GENERATION_SEED_DAYS + 1} числа</span><i /></div>}
                   {changeMarkers.length > 0 && <div className="change-markers-layer" aria-label="Применённые изменения">
                     {changeMarkers.map(({ change, left, lane }) => <div className={cn("change-marker", selectedChangeId === change.id && "change-marker-active")} style={{ left }} key={change.id}>
                       <button type="button" className="change-marker-label" style={{ top: 4 + lane * 24 }} onClick={() => setSelectedChangeId(change.id)}>Изменение {change.id}</button>
                       <span className="change-marker-line" />
                     </div>)}
                   </div>}
-                  <div className="sticky-name header-name"><span>Сотрудники</span><span className="header-count">4</span></div>
-                  {days.map((day) => { const info = dayInfo(period, day); const locked = scheduleStatus === "draft" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview; return <div key={`date-${day}`} className={cn("date-header", info.weekend && "weekend-header", locked && "draft-future-locked")}><strong>{day}</strong><span>{info.weekday}</span></div>; })}
+                  <div className="sticky-name header-name"><span>Сотрудники</span><span className="header-count">{visiblePeople.length}</span></div>
+                  {days.map((day) => { const info = dayInfo(period, day); const locked = scheduleStatus === "draft" && draftMode === "seed" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview; return <div key={`date-${day}`} className={cn("date-header", info.weekend && "weekend-header", locked && "draft-future-locked")}><strong>{day}</strong><span>{info.weekday}</span></div>; })}
 
                   <div className="sticky-name time-name"><Clock3 />Время</div>
-                  {days.map((day) => { const info = dayInfo(period, day); const locked = scheduleStatus === "draft" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview; return <div key={`time-${day}`} className={cn("time-cell", info.weekend && "weekend-cell", locked && "draft-future-locked")}><span>00–08</span><span>08–20</span><span>20–24</span></div>; })}
+                  {days.map((day) => { const info = dayInfo(period, day); const locked = scheduleStatus === "draft" && draftMode === "seed" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview; return <div key={`time-${day}`} className={cn("time-cell", info.weekend && "weekend-cell", locked && "draft-future-locked")}><span>00–08</span><span>08–20</span><span>20–24</span></div>; })}
 
-                  {PEOPLE.map((person, personIndex) => {
+                  {visiblePeople.map((person) => {
+                    const personIndex = PEOPLE.indexOf(person);
                     const isFocusedOut = Boolean(focusPerson && focusPerson !== person);
                     const isHighlighted = hoveredPerson === person || focusPerson === person;
                     return [
-                      <button key={`${person}-name`} type="button" className={cn("sticky-name employee-name", isHighlighted && "employee-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)} onFocus={() => setHoveredPerson(person)} onBlur={() => setHoveredPerson(null)} onClick={() => { setSelectedEmployee(person); setEmployeeOpen(true); }}>
-                        <span className={`employee-avatar avatar-${personIndex + 1}`}>{personIndex + 1}</span><span>{person}</span><ChevronRight className="employee-chevron" />
-                      </button>,
+                      <div key={`${person}-name`} className={cn("sticky-name employee-name employee-name-row", isHighlighted && "employee-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)}>
+                        {scheduleStatus === "draft" && <button type="button" className={cn("employee-lock", lockedEmployeeIds.includes(employeeIdByName[person]) && "employee-lock-active")} onClick={() => setLockedEmployeeIds((current) => current.includes(employeeIdByName[person]) ? current.filter((id) => id !== employeeIdByName[person]) : [...current, employeeIdByName[person]])} title={lockedEmployeeIds.includes(employeeIdByName[person]) ? `Разрешить автоматические назначения для ${person}` : `Запретить автоматические назначения для ${person}`} aria-label={lockedEmployeeIds.includes(employeeIdByName[person]) ? `Разблокировать ${person}` : `Заблокировать ${person}`}>{lockedEmployeeIds.includes(employeeIdByName[person]) ? <LockKeyhole /> : <LockOpen />}</button>}
+                        <button type="button" className="employee-name-action" onClick={() => { setSelectedEmployee(person); setEmployeeOpen(true); }}><span className={`employee-avatar avatar-${personIndex + 1}`}>{personIndex + 1}</span><span>{person}</span><ChevronRight className="employee-chevron" /></button>
+                      </div>,
                       ...days.map((day) => {
                         const info = dayInfo(period, day);
                         const leftShift = displaySchedule.find((shift) => shift.id === shiftIdFor(period, day - 1, "night"));
@@ -1923,7 +2019,7 @@ export default function Home() {
                         const leftOwner = leftShift ? employeeNameById[leftShift.employeeId] : null;
                         const dayOwner = dayShift ? employeeNameById[dayShift.employeeId] : null;
                         const nightOwner = nightShift ? employeeNameById[nightShift.employeeId] : null;
-                        const locked = scheduleStatus === "draft" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview;
+                        const locked = scheduleStatus === "draft" && draftMode === "seed" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview;
                         return <div key={`${person}-${day}`} className={cn("schedule-cell", info.weekend && "weekend-cell", isHighlighted && "cell-highlighted", isFocusedOut && "row-muted", locked && "draft-future-locked")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)}>
                           <div className="segment-slot left-slot">{leftOwner === person ? renderShiftSegment(person, "night", day - 1, "left") : renderDraftSlot(person, "night", day - 1, "left")}</div>
                           <div className="segment-slot center-slot">{dayOwner === person ? renderShiftSegment(person, "day", day, "center") : renderDraftSlot(person, "day", day, "center")}</div>
@@ -1943,7 +2039,7 @@ export default function Home() {
             <section className="summary-grid" aria-label="Сводка графика">
               <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>{assignedMonthShifts} из {monthShifts.length}</strong><span>смены закрыты</span></div></article>
               <article className="summary-card"><span className="summary-icon cyan"><Clock3 /></span><div><strong>12 часов</strong><span>продолжительность смены</span></div></article>
-              <article className="summary-card"><span className="summary-icon violet"><Users /></span><div><strong>4 сотрудника</strong><span>в текущем графике</span></div></article>
+              <article className="summary-card"><span className="summary-icon violet"><Users /></span><div><strong>{visiblePeople.length} сотрудника</strong><span>в текущем графике</span></div></article>
               <article className="summary-card"><span className="summary-icon green"><ShieldCheck /></span><div><strong>{currentValidation.valid ? "Без нарушений" : currentValidation.issues.length}</strong><span>обязательные правила</span></div></article>
             </section>
           </div>
@@ -1953,8 +2049,8 @@ export default function Home() {
           <SheetContent className="generator-sheet sm:max-w-[500px]">
             <SheetHeader className="sheet-header-custom">
               <div className="sheet-avatar generator-sheet-avatar"><WandSparkles /></div>
-              <SheetTitle className="text-xl">Продолжить график</SheetTitle>
-              <SheetDescription>Первые {GENERATION_SEED_DAYS} дней останутся без изменений</SheetDescription>
+              <SheetTitle className="text-xl">{draftMode === "manual" ? "Заполнить свободные смены" : "Продолжить график"}</SheetTitle>
+              <SheetDescription>{draftMode === "manual" ? "Ручные назначения сохранятся; замочки исключат сотрудников из новых назначений" : `Первые ${GENERATION_SEED_DAYS} дней останутся без изменений`}</SheetDescription>
             </SheetHeader>
             <div className="sheet-body">
               {generating ? (
@@ -1976,7 +2072,7 @@ export default function Home() {
                     })}
                   </div>
                   <div className="generation-employee-hours">
-                    {PEOPLE.map((person) => {
+                    {visiblePeople.map((person) => {
                       const employeeId = employeeIdByName[person];
                       const option = generationOptions.find((item) => item.key === selectedGenerationKey) ?? generationOptions[0];
                       return <span key={person}><strong>{person}</strong><small>{option.metrics.workHours[employeeId]} ч · {option.metrics.dayShifts[employeeId]} день / {option.metrics.nightShifts[employeeId]} ночь</small></span>;
@@ -1985,14 +2081,14 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="generation-mode-section">
-                  <h3>Как продолжить расписание?</h3>
-                  <button type="button" className={cn("generation-mode-card", generationMode === "pattern" && "generation-mode-card-selected")} onClick={() => { setGenerationMode("pattern"); setGenerationError(""); }}>
+                  <h3>{draftMode === "manual" ? "Автоматическое заполнение" : "Как продолжить расписание?"}</h3>
+                  {draftMode === "seed" && <button type="button" className={cn("generation-mode-card", generationMode === "pattern" && "generation-mode-card-selected")} onClick={() => { setGenerationMode("pattern"); setGenerationError(""); }}>
                     <span className="generation-mode-icon"><History /></span><span><strong>Продолжить заданную схему</strong><small>Максимально повторить порядок дневных и ночных смен, заданный в первых восьми днях.</small></span><i />
-                  </button>
-                  <button type="button" className={cn("generation-mode-card", generationMode === "optimal" && "generation-mode-card-selected")} onClick={() => { setGenerationMode("optimal"); setGenerationError(""); }}>
+                  </button>}
+                  {draftMode === "seed" && <button type="button" className={cn("generation-mode-card", generationMode === "optimal" && "generation-mode-card-selected")} onClick={() => { setGenerationMode("optimal"); setGenerationError(""); }}>
                     <span className="generation-mode-icon"><ShieldCheck /></span><span><strong>Составить оптимальный график</strong><small>В первую очередь выровнять количество часов, дневных и ночных смен.</small></span><i />
-                  </button>
-                  <div className="generation-lock-note"><LockKeyhole /><span>Все назначения до голубой линии зафиксированы и не участвуют в перестановках.</span></div>
+                  </button>}
+                  <div className="generation-lock-note"><LockKeyhole /><span>{draftMode === "manual" ? "Назначенные вручную смены не изменятся. Сотрудникам с закрытым замочком новые смены не добавляются." : "Все назначения до голубой линии зафиксированы и не участвуют в перестановках."}</span></div>
                   {generationError && <div className="generation-error"><TriangleAlert /><span>{generationError}</span></div>}
                 </div>
               )}
@@ -2033,11 +2129,20 @@ export default function Home() {
                 <div className="detail-line"><span>Рабочие часы по плану</span><strong>{selectedStats.planned} часов</strong></div>
                 <div className="detail-line"><span>Отклонение от плана</span><strong>{selectedStats.delta > 0 ? "+" : ""}{selectedStats.delta} часов</strong></div>
                 <div className="detail-line"><span>Пар полных выходных</span><strong>{selectedStats.offPairs}</strong></div>
+                {scheduleStatus === "draft" && draftMode === "manual" && <div className="draft-absence-panel">
+                  <strong>Недоступность для расчёта</strong>
+                  <p>Укажите отдельную смену или весь период. В это время алгоритм не назначит сотрудника.</p>
+                  <label>С <input type="datetime-local" value={absenceStart} onChange={(event) => { setAbsenceStart(event.target.value); setAbsenceError(""); }} /></label>
+                  <label>По <input type="datetime-local" value={absenceEnd} onChange={(event) => { setAbsenceEnd(event.target.value); setAbsenceError(""); }} /></label>
+                  {absenceError && <p className="draft-absence-error" role="alert">{absenceError}</p>}
+                  <Button type="button" size="sm" onClick={() => addDraftAbsence(selectedEmployee)}>Добавить период</Button>
+                  {draftAbsences.filter((absence) => absence.employeeId === employeeIdByName[selectedEmployee]).map((absence) => <div className="draft-absence-item" key={`${absence.start.toISOString()}-${absence.end.toISOString()}`}><span>{shortDateTime(absence.start)} — {shortDateTime(absence.end)}</span><button type="button" title="Удалить период" aria-label="Удалить период недоступности" onClick={() => setDraftAbsences((current) => current.filter((item) => item !== absence))}><X /></button></div>)}
+                </div>}
                 <div className="action-list">
-                  <button type="button" onClick={() => openEmployeeAbsence(selectedEmployee)}><UserX /><span><strong>Указать недоступность</strong><small>Один день, рабочий блок или период</small></span><ChevronRight /></button>
+                  {scheduleStatus !== "draft" && <button type="button" onClick={() => openEmployeeAbsence(selectedEmployee)}><UserX /><span><strong>Указать недоступность</strong><small>Один день, рабочий блок или период</small></span><ChevronRight /></button>}
                   <button type="button" onClick={() => { setFocusPerson(selectedEmployee); setEmployeeOpen(false); }}><Eye /><span><strong>Показать только его график</strong><small>Остальные дорожки будут приглушены</small></span><ChevronRight /></button>
                   <button type="button" className="action-coming-soon" aria-disabled="true" title="Будет позже"><History /><span><strong>История изменений</strong><small>{historyCount ? `Применено изменений: ${historyCount}` : "Изменений пока нет"}</small><em>Будет позже</em></span><ChevronRight /></button>
-                  <button type="button" className="action-coming-soon" aria-disabled="true" title="Будет позже"><LockKeyhole /><span><strong>Закрепить смены</strong><small>Запретить автоматическую перестановку</small><em>Будет позже</em></span><ChevronRight /></button>
+                  {scheduleStatus === "draft" && <button type="button" onClick={() => setLockedEmployeeIds((current) => current.includes(employeeIdByName[selectedEmployee]) ? current.filter((id) => id !== employeeIdByName[selectedEmployee]) : [...current, employeeIdByName[selectedEmployee]])}>{lockedEmployeeIds.includes(employeeIdByName[selectedEmployee]) ? <LockKeyhole /> : <LockOpen />}<span><strong>{lockedEmployeeIds.includes(employeeIdByName[selectedEmployee]) ? "Разблокировать для расчёта" : "Заблокировать для расчёта"}</strong><small>Ручные назначения останутся, новые автоматически не появятся</small></span><ChevronRight /></button>}
                 </div>
               </div>
             </>}
@@ -2145,7 +2250,7 @@ export default function Home() {
                                       <div><span>День / ночь</span><strong>{before.dayCount}/{before.nightCount} → {after.dayCount}/{after.nightCount}</strong><small>количество смен</small></div>
                                       <div><span>Всего смен</span><strong>{before.total} → {after.total}</strong><small>с началом в месяце</small></div>
                                       <div><span>Пары выходных</span><strong>{before.offPairs} → {after.offPairs}</strong><small>минимум 2</small></div>
-                                      <div><span>Макс. рабочий блок</span><strong>{maxBlock} смен</strong><small>допустимо до 4</small></div>
+                                      <div><span>Макс. рабочий блок</span><strong>{maxBlock} смен</strong><small>допустимо до 5</small></div>
                                       <div><span>Отклонение от плана</span><strong className={after.delta > 0 ? "positive-delta" : after.delta < 0 ? "negative-delta" : "no-change"}>{signedHours(after.delta)}</strong><small>после перестановки</small></div>
                                     </div>
                                     <CoefficientImpact before={beforeCoefficients} after={afterCoefficients} year={period.year} />
@@ -2153,7 +2258,7 @@ export default function Home() {
                                 );
                               })}
                             </div>
-                            <div className="checks-box"><CheckCircle2 /><span>Покрытие 24/7, отдых 12 часов, блоки до 4 смен, две пары выходных и 42 часа отдыха в неделю соблюдены.</span></div>
+                            <div className="checks-box"><CheckCircle2 /><span>Покрытие 24/7, отдых 12 часов, блоки до 5 смен, две пары выходных и 42 часа отдыха в неделю соблюдены.</span></div>
                           </div>
                         )}
                       </article>
@@ -2215,16 +2320,19 @@ export default function Home() {
           <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setNewMonthConfirmOpen(false)}>
             <section className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="new-month-dialog-title" aria-describedby="new-month-dialog-description">
               <span className="reset-dialog-icon new-month-dialog-icon"><CalendarDays /></span>
-              <h2 id="new-month-dialog-title">{requestedMonthExists ? "График этого месяца уже существует" : "Создать график с чистого листа?"}</h2>
-              <p id="new-month-dialog-description">{requestedMonthExists ? "Можно открыть сохранённый график и продолжить работу с ним." : "Будет создан отдельный автоматически сохраняемый черновик. Текущий месяц останется без изменений."}</p>
-              <div className="new-month-picker">
+              <h2 id="new-month-dialog-title">{requestedMonthExists ? "График этого месяца уже существует" : newMonthStep === "employees" ? "Выберите сотрудников" : "Создать график с чистого листа?"}</h2>
+              <p id="new-month-dialog-description">{requestedMonthExists ? "Можно открыть сохранённый график и продолжить работу с ним." : newMonthStep === "employees" ? "В расчёте участвуют только отмеченные сотрудники. Состав черновика выбирается до первого назначения." : "Выберите месяц и способ заполнения. График будет автоматически сохраняться как черновик."}</p>
+              {newMonthStep === "mode" && <><div className="new-month-picker">
                 <label>Месяц<select value={newMonthNumber} onChange={(event) => setNewMonthNumber(event.target.value)}>{MONTHS_RU.map((name, index) => <option value={index + 1} key={name}>{name}</option>)}</select></label>
                 <label>Год<select value={newMonthYear} onChange={(event) => setNewMonthYear(event.target.value)}>{Array.from({ length: 7 }, (_, index) => 2024 + index).map((year) => <option value={year} key={year}>{year}</option>)}</select></label>
               </div>
+              {!requestedMonthExists && <div className="new-month-modes"><button type="button" className={cn("generation-mode-card", newDraftMode === "seed" && "generation-mode-card-selected")} onClick={() => setNewDraftMode("seed")}><span className="generation-mode-icon"><WandSparkles /></span><span><strong>По первым восьми дням</strong><small>Назначить первые восемь дней, затем рассчитать продолжение.</small></span><i /></button><button type="button" className={cn("generation-mode-card", newDraftMode === "manual" && "generation-mode-card-selected")} onClick={() => setNewDraftMode("manual")}><span className="generation-mode-icon"><CalendarDays /></span><span><strong>Ручной режим</strong><small>Назначать смены в любой части месяца, затем заполнить свободные.</small></span><i /></button></div>}</>}
+              {newMonthStep === "employees" && !requestedMonthExists && <div className="new-month-employees">{EMPLOYEES.map((employee) => <label key={employee.id}><input type="checkbox" checked={newEmployeeIds.includes(employee.id)} onChange={() => setNewEmployeeIds((ids) => ids.includes(employee.id) ? ids.filter((id) => id !== employee.id) : [...ids, employee.id])} /><span>{employee.name}</span></label>)}</div>}
+              {newMonthStep === "employees" && selectedCarryInMissing && <p className="new-month-warning">Выберите сотрудника предыдущей ночной смены: она продолжается в этом месяце.</p>}
               <div className="new-month-details"><span>Период<strong>{formatMonthLabel(Number(newMonthYear), Number(newMonthNumber))}</strong></span><span>Смен<strong>{daysInMonth(Number(newMonthYear), Number(newMonthNumber)) * 2}</strong></span><span>Статус<strong>{requestedMonthExists ? "Уже создан" : "Черновик"}</strong></span></div>
               <div className="reset-dialog-actions">
-                <Button variant="outline" autoFocus onClick={() => setNewMonthConfirmOpen(false)}>Отмена</Button>
-                <Button onClick={startBlankDraft}>{requestedMonthExists ? <CalendarDays /> : <Plus />}{requestedMonthExists ? "Открыть график" : "Создать черновик"}</Button>
+                <Button variant="outline" autoFocus onClick={() => newMonthStep === "employees" && !requestedMonthExists ? setNewMonthStep("mode") : setNewMonthConfirmOpen(false)}>{newMonthStep === "employees" && !requestedMonthExists ? "Назад" : "Отмена"}</Button>
+                <Button disabled={newMonthStep === "employees" && (newEmployeeIds.length === 0 || selectedCarryInMissing)} onClick={() => requestedMonthExists || newMonthStep === "employees" ? startBlankDraft() : setNewMonthStep("employees")}>{requestedMonthExists ? <CalendarDays /> : <Plus />}{requestedMonthExists ? "Открыть график" : newMonthStep === "employees" ? "Создать черновик" : "Далее"}</Button>
               </div>
             </section>
           </div>
