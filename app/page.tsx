@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock3,
+  Cloud,
   Download,
   Eye,
   FileSpreadsheet,
@@ -94,6 +95,10 @@ import {
 } from "@/lib/schedule/sample";
 import { lifecycleLabel, lifecycleStatus } from "@/lib/schedule/month";
 import { coefficientHoursForEmployee, type CoefficientHours } from "@/lib/schedule/coefficients";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
+import { loadScheduleSnapshot, saveScheduleSnapshot, type ScheduleSnapshot } from "@/lib/supabase/schedule-store";
+import { getOrCreateWorkspace } from "@/lib/supabase/workspaces";
 import { countMonthlyFullOffDays, countMonthlyOffPairs, findWorkBlock, validateSchedule } from "@/lib/schedule/validator";
 import type { Absence, Employee, GeneratedScheduleOption, GenerationMode, Period, ScheduleOption, Shift, ShiftChange, StoredScheduleStatus } from "@/lib/schedule/types";
 
@@ -145,6 +150,21 @@ type PersistedMonthStore = {
   selectedMonthKey: string;
   months: Record<string, PersistedSchedule>;
 };
+
+function isValidMonthStore(value: unknown): value is PersistedMonthStore {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<PersistedMonthStore>;
+  if (candidate.version !== 1 || !candidate.months || typeof candidate.months !== "object" || Array.isArray(candidate.months)) return false;
+  if (!candidate.selectedMonthKey || !Object.hasOwn(candidate.months, candidate.selectedMonthKey)) return false;
+  try {
+    return Object.entries(candidate.months).every(([key, record]) => {
+      const month = parseMonthKey(key);
+      return month && restoreMonthRecord(record, periodForMonth(month.year, month.month)) !== null;
+    });
+  } catch {
+    return false;
+  }
+}
 
 type PersistedAbsence = Omit<Absence, "start" | "end"> & {
   start: string;
@@ -721,6 +741,18 @@ export default function Home() {
   const [customStart, setCustomStart] = useState("2026-10-03T08:00");
   const [customEnd, setCustomEnd] = useState("2026-10-03T20:00");
   const [storageReady, setStorageReady] = useState(false);
+  const [cloudOpen, setCloudOpen] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState<"checking" | "signed-out" | "choose" | "connected" | "saving" | "error" | "conflict">("checking");
+  const [cloudMessage, setCloudMessage] = useState("");
+  const [cloudEmail, setCloudEmail] = useState("");
+  const [cloudUserEmail, setCloudUserEmail] = useState("");
+  const [cloudWorkspaceId, setCloudWorkspaceId] = useState("");
+  const [cloudRemote, setCloudRemote] = useState<ScheduleSnapshot<PersistedMonthStore> | null>(null);
+  const [cloudEnabled, setCloudEnabled] = useState(false);
+  const cloudRevisionRef = useRef(0);
+  const cloudLastSavedRef = useRef("");
+  const cloudSaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const hadLocalStoreRef = useRef(false);
   const [exporting, setExporting] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [newMonthConfirmOpen, setNewMonthConfirmOpen] = useState(false);
@@ -801,6 +833,7 @@ export default function Home() {
   useEffect(() => {
     try {
       const storedRaw = window.localStorage.getItem(MONTHS_STORAGE_KEY);
+      hadLocalStoreRef.current = Boolean(storedRaw || window.localStorage.getItem(LEGACY_STORAGE_KEY));
       let stored = storedRaw ? JSON.parse(storedRaw) as Partial<PersistedMonthStore> : null;
       if (stored?.version !== 1 || !stored.months || typeof stored.months !== "object") stored = null;
 
@@ -856,6 +889,149 @@ export default function Home() {
       return next;
     });
   }, [baselineSchedule, changeEvents, historyCount, schedule, scheduleStatus, selectedMonthKey, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady || !isSupabaseConfigured()) return;
+    let cancelled = false;
+    async function checkCloud() {
+      try {
+        const client = getSupabaseBrowserClient()!;
+        const { data, error: authError } = await client.auth.getUser();
+        if (cancelled) return;
+        if (authError && authError.name !== "AuthSessionMissingError") throw authError;
+        if (!data.user) {
+          setCloudStatus("signed-out");
+          return;
+        }
+        const workspace = await getOrCreateWorkspace();
+        const remote = await loadScheduleSnapshot<PersistedMonthStore>(workspace.id);
+        if (cancelled) return;
+        setCloudUserEmail(data.user.email ?? "");
+        setCloudWorkspaceId(workspace.id);
+        setCloudRemote(remote);
+        if (remote && (!hadLocalStoreRef.current || JSON.stringify(remote.payload) === JSON.stringify(monthStore))) {
+          loadCloudStore(remote);
+        } else {
+          setCloudStatus("choose");
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setCloudMessage(error instanceof Error ? error.message : "Не удалось подключиться к Supabase");
+        setCloudStatus("error");
+      }
+    }
+    void checkCloud();
+    return () => { cancelled = true; };
+  }, [storageReady]);
+
+  useEffect(() => {
+    if (!cloudEnabled || !cloudWorkspaceId || !storageReady) return;
+    const json = JSON.stringify(monthStore);
+    if (json === cloudLastSavedRef.current) return;
+    const timer = window.setTimeout(() => {
+      setCloudStatus("saving");
+      cloudSaveChainRef.current = cloudSaveChainRef.current.then(async () => {
+        if (json === cloudLastSavedRef.current) return;
+        try {
+          const revision = await saveScheduleSnapshot(cloudWorkspaceId, JSON.parse(json) as PersistedMonthStore, cloudRevisionRef.current);
+          cloudRevisionRef.current = revision;
+          cloudLastSavedRef.current = json;
+          setCloudStatus("connected");
+        } catch (error) {
+          setCloudEnabled(false);
+          setCloudStatus("conflict");
+          setCloudMessage(error instanceof Error ? error.message : "Не удалось сохранить график в облаке");
+        }
+      });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [cloudEnabled, cloudWorkspaceId, monthStore, storageReady]);
+
+  function loadCloudStore(remote: ScheduleSnapshot<PersistedMonthStore>) {
+    if (!isValidMonthStore(remote.payload)) {
+      setCloudMessage("Данные облачного графика повреждены. Локальная копия не затронута.");
+      setCloudStatus("error");
+      return;
+    }
+    const nextKey = remote.payload.selectedMonthKey;
+    const month = parseMonthKey(nextKey)!;
+    const nextPeriod = periodForMonth(month.year, month.month);
+    const restored = restoreMonthRecord(remote.payload.months[nextKey], nextPeriod)!;
+    const synchronized = synchronizeCarryIn(restored, nextPeriod, carryInAssignment(remote.payload.months, month.year, month.month));
+    try {
+      window.localStorage.setItem(`${MONTHS_STORAGE_KEY}:before-cloud-import`, JSON.stringify(monthStore));
+    } catch { /* Резервная копия останется в текущей вкладке. */ }
+    resetTransientView();
+    setSelectedMonthKey(nextKey);
+    setSchedule(synchronized.schedule);
+    setBaselineSchedule(synchronized.baselineSchedule);
+    setScheduleStatus(synchronized.status);
+    setChangeEvents(synchronized.changeEvents);
+    setHistoryCount(synchronized.historyCount);
+    setMonthStore(remote.payload);
+    cloudRevisionRef.current = remote.revision;
+    cloudLastSavedRef.current = JSON.stringify(remote.payload);
+    setCloudEnabled(true);
+    setCloudStatus("connected");
+  }
+
+  async function importLocalStore() {
+    if (!cloudWorkspaceId || cloudRemote) return;
+    const snapshot: PersistedMonthStore = {
+      ...monthStore,
+      selectedMonthKey,
+      months: { ...monthStore.months, [selectedMonthKey]: serializeMonthRecord({ schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus }) },
+    };
+    setCloudStatus("saving");
+    try {
+      const revision = await saveScheduleSnapshot(cloudWorkspaceId, snapshot, 0);
+      cloudRevisionRef.current = revision;
+      cloudLastSavedRef.current = JSON.stringify(snapshot);
+      setCloudRemote({ payload: snapshot, revision });
+      setCloudEnabled(true);
+      setCloudStatus("connected");
+    } catch (error) {
+      setCloudStatus("conflict");
+      setCloudMessage(error instanceof Error ? error.message : "Не удалось перенести графики");
+    }
+  }
+
+  async function sendCloudLogin(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const client = getSupabaseBrowserClient();
+    if (!client) return;
+    setCloudStatus("checking");
+    const { error } = await client.auth.signInWithOtp({
+      email: cloudEmail.trim(),
+      options: { emailRedirectTo: window.location.href.split("?")[0].split("#")[0] },
+    });
+    setCloudMessage(error ? error.message : "Ссылка для входа отправлена на почту. Откройте её в этом браузере.");
+    setCloudStatus(error ? "error" : "signed-out");
+  }
+
+  async function signOutCloud() {
+    setCloudEnabled(false);
+    await getSupabaseBrowserClient()?.auth.signOut();
+    setCloudWorkspaceId("");
+    setCloudRemote(null);
+    setCloudUserEmail("");
+    setCloudStatus("signed-out");
+    setCloudMessage("Локальная копия графиков осталась в этом браузере.");
+  }
+
+  function downloadLocalBackup() {
+    const snapshot: PersistedMonthStore = {
+      ...monthStore,
+      selectedMonthKey,
+      months: { ...monthStore.months, [selectedMonthKey]: serializeMonthRecord({ schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus }) },
+    };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `monitoring-schedule-backup-${selectedMonthKey}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 
   useEffect(() => {
     if (!resetConfirmOpen && !newMonthConfirmOpen && !cancelDraftConfirmOpen && rollbackConfirmId === null) return;
@@ -1637,7 +1813,9 @@ export default function Home() {
               <Button variant="outline" size="icon" onClick={() => nextMonthKey && openStoredMonth(nextMonthKey)} disabled={!nextMonthKey} aria-label="Следующий сохранённый месяц"><ChevronRight /></Button>
               {scheduleStatus === "published" && <Button variant="outline" className="reset-schedule-button" onClick={() => setResetConfirmOpen(true)} disabled={!hasAppliedChanges} title={hasAppliedChanges ? "Отменить все применённые перестановки" : "График уже соответствует исходному"}><RotateCcw /><span>Вернуть исходный</span></Button>}
               <Button className="export-button" onClick={exportExcel} disabled={exporting || scheduleStatus === "draft"}><Download />{exporting ? "Готовим Excel…" : "Скачать Excel"}</Button>
-              <button type="button" className="profile-button coming-icon-button" aria-disabled="true" aria-label="Профиль пользователя — будет позже" title="Будет позже">А</button>
+              {isSupabaseConfigured() ? (
+                <button type="button" className={cn("cloud-button", cloudEnabled && "cloud-button-connected")} onClick={() => setCloudOpen(true)} title="Сохранение в Supabase" aria-label="Сохранение в Supabase"><Cloud />{cloudEnabled ? cloudStatus === "saving" ? "Сохраняем" : "Облако" : "Подключить"}</button>
+              ) : <button type="button" className="profile-button coming-icon-button" aria-disabled="true" aria-label="Профиль пользователя — будет позже" title="Будет позже">А</button>}
             </div>
           </header>
 
@@ -1768,6 +1946,22 @@ export default function Home() {
             <SheetFooter className="sheet-footer-custom">
               {generating ? <><Button variant="outline" onClick={closeGenerator}>Остановить расчёт</Button><Button disabled><Loader2 className="animate-spin" />Идёт расчёт…</Button></> : generationOptions.length ? <><Button variant="outline" onClick={() => { setGenerationOptions([]); setSelectedGenerationKey(""); setGenerationPreview(null); setGenerationError(""); }}>Назад</Button><Button onClick={applyGeneratedSchedule}><CheckCircle2 />Применить продолжение</Button></> : <><Button variant="outline" onClick={closeGenerator}>Отмена</Button><Button onClick={calculateGeneratedSchedule}><WandSparkles />Рассчитать</Button></>}
             </SheetFooter>
+          </SheetContent>
+        </Sheet>
+
+        <Sheet open={cloudOpen} onOpenChange={setCloudOpen}>
+          <SheetContent className="employee-sheet sm:max-w-[430px]">
+            <SheetHeader className="sheet-header-custom"><div className="sheet-avatar"><Cloud /></div><SheetTitle className="text-xl">Сохранение в Supabase</SheetTitle><SheetDescription>Доступ к графикам только после входа</SheetDescription></SheetHeader>
+            <div className="sheet-body cloud-sheet-body">
+              {cloudUserEmail && <p className="cloud-account">Аккаунт: <strong>{cloudUserEmail}</strong></p>}
+              {cloudStatus === "checking" && <p>Проверяем подключение…</p>}
+              {(cloudStatus === "signed-out" || (cloudStatus === "error" && !cloudWorkspaceId)) && <form onSubmit={sendCloudLogin} className="cloud-login-form"><label>Электронная почта<input required type="email" value={cloudEmail} onChange={(event) => setCloudEmail(event.target.value)} placeholder="you@example.com" /></label><Button type="submit">Получить ссылку для входа</Button></form>}
+              {cloudStatus === "choose" && (cloudRemote ? <div className="cloud-choice"><p>В облаке уже есть графики. Скачайте копию данных этого браузера перед открытием облачной версии.</p><Button variant="outline" onClick={downloadLocalBackup}>Скачать локальную копию</Button><Button onClick={() => loadCloudStore(cloudRemote)}>Открыть графики из облака</Button></div> : <div className="cloud-choice"><p>В облаке пока нет графиков. Перенесём все месяцы, исходные планы и историю изменений из этого браузера.</p><Button onClick={importLocalStore}>Перенести мои графики</Button></div>)}
+              {(cloudStatus === "connected" || cloudStatus === "saving") && <div className="cloud-choice"><p>{cloudStatus === "saving" ? "Сохраняем изменения…" : "Графики сохраняются автоматически после изменений."}</p><small>Локальная копия также остаётся в браузере.</small></div>}
+              {cloudStatus === "conflict" && <div className="cloud-choice"><p>Автоматическое сохранение остановлено. Облачный график мог измениться в другой вкладке. Текущие правки остались в этом браузере.</p><Button variant="outline" onClick={async () => { try { const remote = await loadScheduleSnapshot<PersistedMonthStore>(cloudWorkspaceId); setCloudRemote(remote); setCloudStatus("choose"); setCloudMessage(""); } catch (error) { setCloudMessage(error instanceof Error ? error.message : "Не удалось загрузить данные"); } }}>Проверить облачную версию</Button></div>}
+              {cloudMessage && <p className="cloud-message" role="status">{cloudMessage}</p>}
+              {cloudUserEmail && <Button variant="outline" onClick={signOutCloud}>Выйти из аккаунта</Button>}
+            </div>
           </SheetContent>
         </Sheet>
 
