@@ -746,13 +746,9 @@ export default function Home() {
   const [authEpoch, setAuthEpoch] = useState(0);
   const [loginName, setLoginName] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [cloudStatus, setCloudStatus] = useState<"checking" | "signed-out" | "choose" | "connected" | "saving" | "error" | "conflict">("checking");
   const [cloudMessage, setCloudMessage] = useState("");
-  const [cloudEmail, setCloudEmail] = useState("");
-  const [cloudUserEmail, setCloudUserEmail] = useState("");
   const [cloudWorkspaceId, setCloudWorkspaceId] = useState("");
   const [cloudRemote, setCloudRemote] = useState<ScheduleSnapshot<PersistedMonthStore> | null>(null);
   const [cloudEnabled, setCloudEnabled] = useState(false);
@@ -915,7 +911,6 @@ export default function Home() {
         const remote = await loadScheduleSnapshot<PersistedMonthStore>(workspace.id);
         if (cancelled) return;
         setAccessStatus("authorized");
-        setCloudUserEmail(data.user.email ?? "");
         setCloudWorkspaceId(workspace.id);
         setCloudRemote(remote);
         if (remote && (!hadLocalStoreRef.current || JSON.stringify(remote.payload) === JSON.stringify(monthStore))) {
@@ -941,7 +936,6 @@ export default function Home() {
       if (event === "SIGNED_OUT") {
         setCloudEnabled(false);
         setCloudWorkspaceId("");
-        setCloudUserEmail("");
         setCloudOpen(false);
         setAccessStatus("signed-out");
       }
@@ -1021,21 +1015,6 @@ export default function Home() {
     }
   }
 
-  async function sendCloudLogin(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const client = getSupabaseBrowserClient();
-    if (!client) return;
-    setAuthBusy(true);
-    setCloudStatus("checking");
-    const { error } = await client.auth.signInWithOtp({
-      email: cloudEmail.trim(),
-      options: { shouldCreateUser: false, emailRedirectTo: window.location.href.split("?")[0].split("#")[0] },
-    });
-    setCloudMessage(error ? error.message : "Ссылка для входа отправлена на почту. Откройте её в этом браузере.");
-    setCloudStatus(error ? "error" : "signed-out");
-    setAuthBusy(false);
-  }
-
   async function signInWithPassword(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const client = getSupabaseBrowserClient();
@@ -1056,32 +1035,11 @@ export default function Home() {
     setAuthEpoch((value) => value + 1);
   }
 
-  async function setAdminPassword(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (newPassword.length < 12) {
-      setCloudMessage("Пароль должен содержать не менее 12 символов.");
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setCloudMessage("Пароли не совпадают.");
-      return;
-    }
-    const client = getSupabaseBrowserClient();
-    if (!client) return;
-    setAuthBusy(true);
-    const { error } = await client.auth.updateUser({ password: newPassword });
-    setNewPassword("");
-    setConfirmPassword("");
-    setAuthBusy(false);
-    setCloudMessage(error ? error.message : "Пароль установлен. В следующий раз войдите с почтой и паролем.");
-  }
-
   async function signOutCloud() {
     setCloudEnabled(false);
     await getSupabaseBrowserClient()?.auth.signOut();
     setCloudWorkspaceId("");
     setCloudRemote(null);
-    setCloudUserEmail("");
     setCloudStatus("signed-out");
     setAccessStatus("signed-out");
     setCloudOpen(false);
@@ -1852,9 +1810,6 @@ export default function Home() {
             <label>Пароль<input type="password" autoComplete="current-password" required value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></label>
             <Button type="submit" disabled={authBusy}>{authBusy ? "Входим…" : "Войти"}</Button>
           </form>
-          <details className="access-recovery"><summary>Первый вход или забыли пароль?</summary>
-            <form onSubmit={sendCloudLogin}><p>Отправим ссылку на почту уже созданного администратора. После входа можно установить пароль.</p><label>Почта администратора<input type="email" autoComplete="email" required value={cloudEmail} onChange={(event) => setCloudEmail(event.target.value)} /></label><Button type="submit" variant="outline" disabled={authBusy || !cloudEmail.trim()}>Получить ссылку</Button></form>
-          </details>
           {cloudMessage && <p role="status" className="access-message">{cloudMessage}</p>}
         </>}
       </section>
@@ -1873,9 +1828,6 @@ export default function Home() {
             {NAV_ITEMS.map((item) => <NavButton key={item.label} {...item} expanded={sidebarExpanded} />)}
           </nav>
           <div className="sidebar-bottom">
-            <button type="button" className="nav-button account-nav-button" onClick={() => setCloudOpen(true)} aria-label="Аккаунт администратора" title="Аккаунт администратора">
-              <UserRound className="size-[19px]" />{sidebarExpanded && <span className="nav-label">Аккаунт</span>}
-            </button>
             <NavButton label="Настройки" icon={Settings2} expanded={sidebarExpanded} />
             <button type="button" className="collapse-button" onClick={() => setSidebarExpanded((value) => !value)} aria-label={sidebarExpanded ? "Свернуть меню" : "Развернуть меню"}>
               {sidebarExpanded ? <PanelLeftClose /> : <PanelLeftOpen />}{sidebarExpanded && <span>Свернуть меню</span>}
@@ -1910,9 +1862,14 @@ export default function Home() {
               <Button variant="outline" size="icon" onClick={() => nextMonthKey && openStoredMonth(nextMonthKey)} disabled={!nextMonthKey} aria-label="Следующий сохранённый месяц"><ChevronRight /></Button>
               {scheduleStatus === "published" && <Button variant="outline" className="reset-schedule-button" onClick={() => setResetConfirmOpen(true)} disabled={!hasAppliedChanges} title={hasAppliedChanges ? "Отменить все применённые перестановки" : "График уже соответствует исходному"}><RotateCcw /><span>Вернуть исходный</span></Button>}
               <Button className="export-button" onClick={exportExcel} disabled={exporting || scheduleStatus === "draft"}><Download />{exporting ? "Готовим Excel…" : "Скачать Excel"}</Button>
-              {isSupabaseConfigured() ? (
-                <button type="button" className={cn("cloud-button", cloudEnabled && "cloud-button-connected")} onClick={() => setCloudOpen(true)} title="Сохранение в Supabase" aria-label="Сохранение в Supabase"><Cloud />{cloudEnabled ? cloudStatus === "saving" ? "Сохраняем" : "Облако" : "Подключить"}</button>
-              ) : <button type="button" className="profile-button coming-icon-button" aria-disabled="true" aria-label="Профиль пользователя — будет позже" title="Будет позже">А</button>}
+              {isSupabaseConfigured() ? <DropdownMenu>
+                <DropdownMenuTrigger asChild><button type="button" className="profile-button" aria-label="Действия пользователя">А</button></DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => setCloudOpen(true)}><Cloud />Сохранение графиков</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => void signOutCloud()}>Выйти</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu> : <button type="button" className="profile-button coming-icon-button" aria-disabled="true" aria-label="Профиль пользователя — будет позже" title="Будет позже">А</button>}
             </div>
           </header>
 
@@ -2048,16 +2005,13 @@ export default function Home() {
 
         <Sheet open={cloudOpen} onOpenChange={setCloudOpen}>
           <SheetContent className="employee-sheet sm:max-w-[430px]">
-            <SheetHeader className="sheet-header-custom"><div className="sheet-avatar"><Cloud /></div><SheetTitle className="text-xl">Сохранение в Supabase</SheetTitle><SheetDescription>Доступ к графикам только после входа</SheetDescription></SheetHeader>
+            <SheetHeader className="sheet-header-custom"><div className="sheet-avatar"><Cloud /></div><SheetTitle className="text-xl">Сохранение графиков</SheetTitle><SheetDescription>Доступ к графикам только после входа</SheetDescription></SheetHeader>
             <div className="sheet-body cloud-sheet-body">
-              {cloudUserEmail && <p className="cloud-account">Аккаунт: <strong>{cloudUserEmail}</strong></p>}
               {cloudStatus === "checking" && <p>Проверяем подключение…</p>}
-              {cloudUserEmail && <form onSubmit={setAdminPassword} className="cloud-login-form"><label>Установить или изменить пароль<input type="password" autoComplete="new-password" minLength={12} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="Не менее 12 символов" /></label><label>Повторите пароль<input type="password" autoComplete="new-password" required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label><Button type="submit" variant="outline" disabled={authBusy}>Сохранить пароль</Button></form>}
               {cloudStatus === "choose" && (cloudRemote ? <div className="cloud-choice"><p>В облаке уже есть графики. Скачайте копию данных этого браузера перед открытием облачной версии.</p><Button variant="outline" onClick={downloadLocalBackup}>Скачать локальную копию</Button><Button onClick={() => loadCloudStore(cloudRemote)}>Открыть графики из облака</Button></div> : <div className="cloud-choice"><p>В облаке пока нет графиков. Перенесём все месяцы, исходные планы и историю изменений из этого браузера.</p><Button onClick={importLocalStore}>Перенести мои графики</Button></div>)}
               {(cloudStatus === "connected" || cloudStatus === "saving") && <div className="cloud-choice"><p>{cloudStatus === "saving" ? "Сохраняем изменения…" : "Графики сохраняются автоматически после изменений."}</p><small>Локальная копия также остаётся в браузере.</small></div>}
               {cloudStatus === "conflict" && <div className="cloud-choice"><p>Автоматическое сохранение остановлено. Облачный график мог измениться в другой вкладке. Текущие правки остались в этом браузере.</p><Button variant="outline" onClick={async () => { try { const remote = await loadScheduleSnapshot<PersistedMonthStore>(cloudWorkspaceId); setCloudRemote(remote); setCloudStatus("choose"); setCloudMessage(""); } catch (error) { setCloudMessage(error instanceof Error ? error.message : "Не удалось загрузить данные"); } }}>Проверить облачную версию</Button></div>}
               {cloudMessage && <p className="cloud-message" role="status">{cloudMessage}</p>}
-              {cloudUserEmail && <Button variant="outline" onClick={signOutCloud}>Выйти из аккаунта</Button>}
             </div>
           </SheetContent>
         </Sheet>
