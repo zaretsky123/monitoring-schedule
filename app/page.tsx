@@ -744,6 +744,7 @@ export default function Home() {
   const [cloudOpen, setCloudOpen] = useState(false);
   const [accessStatus, setAccessStatus] = useState<"checking" | "signed-out" | "authorized" | "forbidden">("checking");
   const [authEpoch, setAuthEpoch] = useState(0);
+  const [loginName, setLoginName] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -1041,11 +1042,11 @@ export default function Home() {
     if (!client) return;
     setAuthBusy(true);
     setCloudMessage("");
-    const { data, error } = await client.functions.invoke("admin-login", { body: { login: "admin", password: loginPassword } });
+    const { data, error } = await client.functions.invoke("admin-login", { body: { login: loginName.trim().toLowerCase(), password: loginPassword } });
     setLoginPassword("");
     if (error || !data?.access_token || !data?.refresh_token) {
       setAuthBusy(false);
-      setCloudMessage("Не удалось войти. Проверьте пароль администратора.");
+      setCloudMessage("Не удалось войти. Проверьте логин и пароль администратора.");
       return;
     }
     const { error: sessionError } = await client.auth.setSession({ access_token: data.access_token, refresh_token: data.refresh_token });
@@ -1847,7 +1848,7 @@ export default function Home() {
           <Button variant="outline" onClick={signOutCloud}>Выйти</Button>
         </> : <>
           <form onSubmit={signInWithPassword} className="access-form">
-            <label>Логин<input value="admin" readOnly aria-label="Логин" /></label>
+            <label>Логин<input type="text" autoComplete="username" required value={loginName} onChange={(event) => setLoginName(event.target.value)} aria-label="Логин" /></label>
             <label>Пароль<input type="password" autoComplete="current-password" required value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></label>
             <Button type="submit" disabled={authBusy}>{authBusy ? "Входим…" : "Войти"}</Button>
           </form>
