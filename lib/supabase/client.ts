@@ -9,7 +9,7 @@ export function getSupabaseBrowserClient() {
 
   const config = getSupabasePublicConfig();
   browserClient = config
-    ? createClient(config.url, config.anonKey, {
+    ? createClient(config.url, config.publishableKey, {
         auth: {
           persistSession: true,
           autoRefreshToken: true,

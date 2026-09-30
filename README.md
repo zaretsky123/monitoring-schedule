@@ -34,14 +34,14 @@ pnpm dev
 cp .env.example .env.local
 ```
 
-Затем заполните `NEXT_PUBLIC_SUPABASE_URL` и `NEXT_PUBLIC_SUPABASE_ANON_KEY` значениями из Supabase. В клиентский код нельзя добавлять `service_role` key.
+Затем заполните `NEXT_PUBLIC_SUPABASE_URL` и `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` значениями из Supabase. В клиентский код нельзя добавлять secret/service_role key.
 
 Для GitHub Pages добавьте:
 
 - repository variable `NEXT_PUBLIC_SUPABASE_URL`;
-- repository secret `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+- repository variable `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
 
-Публичный anon key попадает в статическую сборку, что является штатным режимом Supabase. Защиту реальных ФИО и графиков обеспечивают включённые RLS-политики и обязательная авторизация пользователя.
+Publishable key попадает в статическую сборку, что является штатным режимом Supabase. Защиту реальных ФИО и графиков обеспечивают включённые RLS-политики и обязательная авторизация пользователя. Старый `NEXT_PUBLIC_SUPABASE_ANON_KEY` временно принимается для совместимости.
 
 ### Сохранение действующего редактора
 
