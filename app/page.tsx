@@ -1041,13 +1041,16 @@ export default function Home() {
     if (!client) return;
     setAuthBusy(true);
     setCloudMessage("");
-    const { error } = await client.auth.signInWithPassword({ email: cloudEmail.trim(), password: loginPassword });
+    const { data, error } = await client.functions.invoke("admin-login", { body: { login: "admin", password: loginPassword } });
     setLoginPassword("");
-    setAuthBusy(false);
-    if (error) {
-      setCloudMessage("Не удалось войти. Проверьте почту и пароль.");
+    if (error || !data?.access_token || !data?.refresh_token) {
+      setAuthBusy(false);
+      setCloudMessage("Не удалось войти. Проверьте пароль администратора.");
       return;
     }
+    const { error: sessionError } = await client.auth.setSession({ access_token: data.access_token, refresh_token: data.refresh_token });
+    setAuthBusy(false);
+    if (sessionError) { setCloudMessage("Не удалось восстановить сеанс. Повторите вход."); return; }
     setAccessStatus("checking");
     setAuthEpoch((value) => value + 1);
   }
@@ -1845,12 +1848,11 @@ export default function Home() {
         </> : <>
           <form onSubmit={signInWithPassword} className="access-form">
             <label>Логин<input value="admin" readOnly aria-label="Логин" /></label>
-            <label>Почта администратора<input type="email" autoComplete="username" required value={cloudEmail} onChange={(event) => setCloudEmail(event.target.value)} /></label>
             <label>Пароль<input type="password" autoComplete="current-password" required value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></label>
             <Button type="submit" disabled={authBusy}>{authBusy ? "Входим…" : "Войти"}</Button>
           </form>
           <details className="access-recovery"><summary>Первый вход или забыли пароль?</summary>
-            <form onSubmit={sendCloudLogin}><p>Введите почту администратора выше. Отправим ссылку для входа, после чего можно установить пароль.</p><Button type="submit" variant="outline" disabled={authBusy || !cloudEmail.trim()}>Получить ссылку</Button></form>
+            <form onSubmit={sendCloudLogin}><p>Отправим ссылку на почту уже созданного администратора. После входа можно установить пароль.</p><label>Почта администратора<input type="email" autoComplete="email" required value={cloudEmail} onChange={(event) => setCloudEmail(event.target.value)} /></label><Button type="submit" variant="outline" disabled={authBusy || !cloudEmail.trim()}>Получить ссылку</Button></form>
           </details>
           {cloudMessage && <p role="status" className="access-message">{cloudMessage}</p>}
         </>}
