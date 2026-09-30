@@ -475,7 +475,7 @@ button { font: inherit; }
   .sidebar .account-nav-button { justify-content: center; padding: 0; }
   .topbar { align-items: flex-start; padding: 13px 15px; }
   .topbar-heading h1 { font-size: 19px; }
-  .topbar-actions > button:nth-child(-n+3),.profile-button { display: none; }
+  .topbar-actions > button:nth-child(-n+3) { display: none; }
   .reset-schedule-button span { display: none; }
   .reset-schedule-button { width: 36px; padding-inline: 0; }
   .export-button { margin: 0; }
