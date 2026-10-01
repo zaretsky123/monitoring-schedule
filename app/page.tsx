@@ -32,6 +32,7 @@ import {
   X,
 } from "lucide-react";
 
+import { baseShiftId, shiftSlots, secondSlot, setReinforcements } from "@/lib/schedule/slots";
 import { ShiftActions } from "@/components/shift-actions";
 import { EmployeeProfile, type EmployeeMonthEntry } from "@/components/employee-profile";
 import { EmployeesPanel } from "@/components/employees-panel";
@@ -142,7 +143,7 @@ const WEEKDAYS_RU = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 const MONTHS_RU = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
 
 type PersistedSchedule = {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   employeeRates?: Record<string, number>;
   isTest?: boolean;
   historyCount: number;
@@ -243,6 +244,7 @@ type GenerationWorkerResult =
   | { found: false; options: []; reason: string };
 
 type ShiftSelection = {
+  shiftId?: string;
   person: Person;
   kind: ShiftKind;
   startDay: number;
@@ -405,7 +407,7 @@ function deserializeShifts(shifts: PersistedSchedule["schedule"] | undefined) {
 }
 
 function restoreMonthRecord(persisted: Partial<PersistedSchedule>, period: Period) {
-  if (![1, 2, 3, 4, 5, 6, 7].includes(persisted.version ?? 0)) return null;
+  if (![1, 2, 3, 4, 5, 6, 7, 8].includes(persisted.version ?? 0)) return null;
   const restored = deserializeShifts(persisted.schedule);
   if (!restored) return null;
   const restoredBaseline = deserializeShifts(persisted.baselineSchedule)
@@ -502,7 +504,7 @@ function serializeMonthRecord({
   draftAbsences?: Absence[];
 }): PersistedSchedule {
   return {
-    version: 7,
+    version: 8,
     employeeRates,
     isTest,
     historyCount,
@@ -528,25 +530,26 @@ function carryInAssignment(months: Record<string, PersistedSchedule>, year: numb
   const previousRecord = months[monthKey(previous.year, previous.month)];
   if (!previousRecord || Boolean(previousRecord.isTest) !== isTest) return null;
   const boundary = periodForMonth(year, month).start.getTime();
-  const shift = previousRecord.schedule.find((item) => item.type === "N" && new Date(item.start).getTime() < boundary && new Date(item.end).getTime() > boundary);
+  const shift = previousRecord.schedule.find((item) => item.slot !== 2 && item.type === "N" && new Date(item.start).getTime() < boundary && new Date(item.end).getTime() > boundary);
   if (!shift?.employeeId) return null;
-  return { employeeId: shift.employeeId, plannedEmployeeId: shift.plannedEmployeeId || shift.employeeId };
+  const secondary = previousRecord.schedule.find((item) => item.slot === 2 && item.id === `${shift.id}:2`);
+  return { employeeId: shift.employeeId, plannedEmployeeId: shift.plannedEmployeeId || shift.employeeId, secondary: secondary?.employeeId ? { employeeId: secondary.employeeId, plannedEmployeeId: secondary.plannedEmployeeId || secondary.employeeId } : undefined };
 }
 
 function synchronizeCarryIn<T extends { schedule: Shift[]; baselineSchedule: Shift[] }>(
   record: T,
   period: Period,
-  assignment: { employeeId: string; plannedEmployeeId: string } | null,
+  assignment: { employeeId: string; plannedEmployeeId: string; secondary?: { employeeId: string; plannedEmployeeId: string } } | null,
 ) {
   if (!assignment) return record;
   const isCarryIn = (shift: Shift) => shift.type === "N" && shift.start < period.start && shift.end > period.start;
-  return {
-    ...record,
-    schedule: record.schedule.map((shift) => isCarryIn(shift) ? { ...shift, ...assignment } : shift),
-    baselineSchedule: record.baselineSchedule.map((shift) => isCarryIn(shift)
-      ? { ...shift, employeeId: assignment.plannedEmployeeId, plannedEmployeeId: assignment.plannedEmployeeId }
-      : shift),
+  const sync = (shifts: Shift[], baseline: boolean) => {
+    const result = shifts.filter((shift) => !(isCarryIn(shift) && shift.slot === 2)).map((shift) => isCarryIn(shift) ? { ...shift, employeeId: baseline ? assignment.plannedEmployeeId : assignment.employeeId, plannedEmployeeId: assignment.plannedEmployeeId } : shift);
+    const primary = result.find(isCarryIn);
+    if (primary && assignment.secondary) result.push({ ...secondSlot(primary), employeeId: baseline ? assignment.secondary.plannedEmployeeId : assignment.secondary.employeeId, plannedEmployeeId: assignment.secondary.plannedEmployeeId });
+    return result;
   };
+  return { ...record, schedule: sync(record.schedule, false), baselineSchedule: sync(record.baselineSchedule, true) };
 }
 
 function mergeAdjacentContext(
@@ -837,6 +840,9 @@ export default function Home() {
   const [newEmployeeIds, setNewEmployeeIds] = useState<string[]>(EMPLOYEES.map((employee) => employee.id));
   const [cancelDraftConfirmOpen, setCancelDraftConfirmOpen] = useState(false);
   const [draftPublishError, setDraftPublishError] = useState("");
+  const [reinforcementEditing, setReinforcementEditing] = useState(false);
+  const [reinforcementSelection, setReinforcementSelection] = useState<string[]>([]);
+  const [reinforcementError, setReinforcementError] = useState("");
   const [generatorOpen, setGeneratorOpen] = useState(false);
   const [generationMode, setGenerationMode] = useState<GenerationMode>("pattern");
   const [generating, setGenerating] = useState(false);
@@ -859,7 +865,7 @@ export default function Home() {
   const monthLabel = formatMonthLabel(period.year, period.month);
   const monthGenitive = formatMonthGenitive(period.year, period.month);
   const currentLifecycle = lifecycleStatus(scheduleStatus, period);
-  const scheduleReadOnly = currentLifecycle === "completed" || Boolean(employeeMonthId);
+  const scheduleReadOnly = currentLifecycle === "completed" || Boolean(employeeMonthId) || reinforcementEditing;
   const displaySchedule = previewSchedule ?? generationPreview ?? schedule;
   const contextualSchedule = useMemo(
     () => mergeAdjacentContext(displaySchedule, monthStore.months, selectedMonthKey, period, monthIsTest),
@@ -1192,7 +1198,7 @@ export default function Home() {
     setCalculationError("");
     setPreviewSchedule(null);
     setPendingChange(null);
-    const target = schedule.find((item) => item.id === shiftIdFor(period, shift.startDay, shift.kind));
+    const target = schedule.find((item) => item.id === (shift.shiftId ?? shiftIdFor(period, shift.startDay, shift.kind)));
     if (target) {
       setCustomStart(target.start.toISOString().slice(0, 16));
       setCustomEnd(target.end.toISOString().slice(0, 16));
@@ -1271,11 +1277,11 @@ export default function Home() {
       annotations: { readOnlyHint: false, untrustedContentHint: false },
       execute(input) {
         const value = input as { employeeName?: string; day?: number; shiftType?: string };
-        const person = schedule.find((shift) => shift.id === shiftIdFor(period, value.day ?? 0, value.shiftType as ShiftKind) && employeeNameById[shift.employeeId] === value.employeeName)?.employeeId;
+        const person = shiftSlots(schedule, shiftIdFor(period, value.day ?? 0, value.shiftType as ShiftKind)).find((shift) => employeeNameById[shift.employeeId] === value.employeeName)?.employeeId;
         if (!person || !Number.isInteger(value.day) || !value.day || value.day < 1 || value.day > dayCount || (value.shiftType !== "day" && value.shiftType !== "night")) throw new Error("Некорректные параметры смены");
-        const engineShift = schedule.find((shift) => shift.id === shiftIdFor(period, value.day!, value.shiftType as ShiftKind));
+        const engineShift = shiftSlots(schedule, shiftIdFor(period, value.day!, value.shiftType as ShiftKind)).find((shift) => shift.employeeId === person);
         if (!engineShift || engineShift.employeeId !== person) throw new Error("Сотрудник не назначен на эту смену");
-        openWorkflow({ person, kind: value.shiftType as ShiftKind, startDay: value.day }, "remove");
+        openWorkflow({ person, kind: value.shiftType as ShiftKind, startDay: value.day, shiftId: engineShift.id }, "remove");
         return { status: "opened", employeeName: employeeNameById[person], day: value.day, shiftType: value.shiftType };
       },
     }, { signal: lifecycle.signal })).catch(() => undefined);
@@ -1294,10 +1300,10 @@ export default function Home() {
 
   function markShiftUnavailable(employeeId: string, shiftId: string, confirmed = false) {
     if (scheduleReadOnly) return;
-    const target = schedule.find((shift) => shift.id === shiftId);
+    const target = schedule.find((shift) => shift.id === shiftId) ?? schedule.find((shift) => shift.id === shiftId.replace(/:2$/, ""));
     if (!target || shiftAbsences(employeeId, target, activeAbsences).length) return;
     if (target.employeeId === employeeId && scheduleStatus !== "draft") {
-      openWorkflow({ person: employeeId, kind: target.type === "D" ? "day" : "night", startDay: Math.floor((target.start.getTime() - period.start.getTime()) / 86400000) + 1 }, "remove");
+      openWorkflow({ person: employeeId, kind: target.type === "D" ? "day" : "night", startDay: Math.floor((target.start.getTime() - period.start.getTime()) / 86400000) + 1, shiftId: target.id }, "remove");
       return;
     }
     if (target.employeeId === employeeId && !confirmed) { setPendingShiftBlock({ employeeId, shiftId }); return; }
@@ -1324,14 +1330,14 @@ export default function Home() {
   }
 
   function renderShiftSegment(person: Person, kind: ShiftKind, startDay: number, segment: "left" | "center" | "right") {
-    const shift = { person, kind, startDay } satisfies ShiftSelection;
+    const scheduleShift = shiftSlots(displaySchedule, shiftIdFor(period, startDay, kind)).find((item) => item.employeeId === person);
+    const shift = { person, kind, startDay, shiftId: scheduleShift?.id } satisfies ShiftSelection;
     const longLabel = shiftLabel(shift, period);
-    const scheduleShift = displaySchedule.find((item) => item.id === shiftIdFor(period, startDay, kind));
     const changed = Boolean(scheduleShift && scheduleShift.employeeId !== scheduleShift.plannedEmployeeId);
     const highlightedByChange = Boolean(scheduleShift && selectedChangeId !== null && changeEvents.find((change) => change.id === selectedChangeId)?.changes.some((change) => change.shiftId === scheduleShift.id));
     const focusedPreviewChange = Boolean(scheduleShift && focusedPreviewShiftId === scheduleShift.id);
     const highlightedAbsence = Boolean(scheduleShift && focusedAbsence?.employeeId === person && scheduleShift.start < focusedAbsence.end && scheduleShift.end > focusedAbsence.start);
-    const control = <button type="button" className={cn("shift-segment", kind === "day" ? "shift-day" : "shift-night", segment === "left" && "segment-left", segment === "right" && "segment-right", changed && "shift-changed", highlightedByChange && "shift-history-highlighted", focusedPreviewChange && "shift-preview-focused", highlightedAbsence && "absence-highlighted")} aria-label={`${employeeNameById[person]}. ${kind === "day" ? "Дневная" : "Ночная"} смена: ${longLabel}`} title={longLabel} onClick={scheduleReadOnly ? () => openEmployeeSheet(person) : undefined}><span>{kind === "day" ? "Д" : "Н"}</span></button>;
+    const control = <button type="button" className={cn("shift-segment", kind === "day" ? "shift-day" : "shift-night", segment === "left" && "segment-left", segment === "right" && "segment-right", changed && "shift-changed", highlightedByChange && "shift-history-highlighted", focusedPreviewChange && "shift-preview-focused", highlightedAbsence && "absence-highlighted")} aria-label={`${employeeNameById[person]}. ${kind === "day" ? "Дневная" : "Ночная"} смена: ${longLabel}`} title={longLabel} onClick={scheduleReadOnly && !reinforcementEditing ? () => openEmployeeSheet(person) : undefined}><span>{kind === "day" ? "Д" : "Н"}</span></button>;
     if (scheduleReadOnly) return control;
     const actions = scheduleStatus === "draft" ? [
       { label: "Снять назначение", destructive: true, onSelect: () => scheduleShift && removeDraftAssignment(scheduleShift.id) },
@@ -1345,14 +1351,19 @@ export default function Home() {
   }
 
   function renderDraftSlot(person: Person, kind: ShiftKind, startDay: number, segment: "left" | "center" | "right") {
-    const target = displaySchedule.find((shift) => shift.id === shiftIdFor(period, startDay, kind));
-    if (!target) return null;
+    const slots = shiftSlots(displaySchedule, shiftIdFor(period, startDay, kind));
+    const primary = slots.find((shift) => shift.slot !== 2);
+    if (!primary) return null;
+    const target = slots.find((shift) => !shift.employeeId) ?? (slots.length < 2 ? secondSlot(primary) : primary);
+    const full = slots.filter((shift) => shift.employeeId).length >= 2;
+    const addingSecond = slots.some((shift) => shift.employeeId);
     const employee = employees.find((item) => item.id === person);
     const blocking = shiftAbsences(person, target, activeAbsences);
     const unavailable = !employee || (!scheduleReadOnly && !isEmployeeAvailable(employee, target)) || blocking.length > 0;
     const highlighted = Boolean(focusedAbsence?.employeeId === person && target.start < focusedAbsence.end && target.end > focusedAbsence.start);
     const editable = !scheduleReadOnly && scheduleStatus === "draft" && !(draftMode === "seed" && startDay > GENERATION_SEED_DAYS && !draftGenerationStarted);
-    const assignable = editable && !target.employeeId && !unavailable;
+    const inheritedBoundary = target.start < period.start && Boolean(carryInAssignment(monthStore.months, period.year, period.month, monthIsTest));
+    const assignable = editable && !full && !target.employeeId && !unavailable && !(inheritedBoundary && slots.length === 1 && addingSecond);
     const actions = unavailable ? [
       ...(blocking.some((absence) => absence.source === "shift" && draftAbsences.includes(absence)) ? [{ label: "Снять недоступность смены", onSelect: () => blocking.filter((absence) => absence.source === "shift" && draftAbsences.includes(absence)).forEach(removeAbsence) }] : []),
       ...(blocking.some((absence) => absence.source !== "shift") ? [{ label: "Открыть период недоступности", onSelect: () => openEmployeeSheet(person) }] : []),
@@ -1361,14 +1372,14 @@ export default function Home() {
       { label: "Отметить недоступность", onSelect: () => markShiftUnavailable(person, target.id) },
     ];
     if (!unavailable && !editable && scheduleReadOnly) return null;
-    const control = <button type="button" className={cn(assignable ? "draft-shift-slot" : "empty-shift-slot", `draft-${segment}-slot`, unavailable && "unavailable-shift-slot", highlighted && "absence-highlighted")} onClick={assignable ? () => assignDraftShift(target.id, person) : unavailable ? () => openEmployeeSheet(person) : undefined} aria-disabled={unavailable || !assignable} aria-label={unavailable ? `${employeeNameById[person]} недоступен в эту смену` : assignable ? `Назначить ${employeeNameById[person]} на ${kind === "day" ? "дневную" : "ночную"} смену` : `${employeeNameById[person]}. Свободно: ${shiftLabel({person,kind,startDay}, period)}`} title={unavailable ? "Недоступно" : undefined}>{unavailable ? <X /> : assignable ? <Plus /> : null}</button>;
+    const control = <button type="button" className={cn(assignable ? "draft-shift-slot" : "empty-shift-slot", assignable && addingSecond && "draft-second-slot", `draft-${segment}-slot`, unavailable && "unavailable-shift-slot", highlighted && "absence-highlighted")} onClick={assignable ? () => assignDraftShift(target.id, person) : unavailable && !reinforcementEditing ? () => openEmployeeSheet(person) : undefined} aria-disabled={unavailable || !assignable} aria-label={unavailable ? `${employeeNameById[person]} недоступен в эту смену` : assignable ? `${addingSecond ? "Добавить второго: " : "Назначить "}${employeeNameById[person]} на ${kind === "day" ? "дневную" : "ночную"} смену` : `${employeeNameById[person]}. Свободно: ${shiftLabel({person,kind,startDay}, period)}`} title={unavailable ? "Недоступно" : undefined}>{unavailable ? <X /> : assignable ? <Plus /> : null}</button>;
     return <ShiftActions actions={actions} disabled={scheduleReadOnly}>{control}</ShiftActions>;
   }
 
   async function calculateOptions() {
     if (scheduleReadOnly || calculating) return;
     const employeeId = selectedShift ? selectedShift.person : selectedEmployee ? selectedEmployee : "";
-    let target = selectedShift ? schedule.find((shift) => shift.id === shiftIdFor(period, selectedShift.startDay, selectedShift.kind)) : undefined;
+    let target = selectedShift ? schedule.find((shift) => shift.id === (selectedShift.shiftId ?? shiftIdFor(period, selectedShift.startDay, selectedShift.kind))) : undefined;
     let absence: Absence | null = target ? { id: crypto.randomUUID(), employeeId: target.employeeId, start: target.start, end: target.end, source: "shift", createdAt: new Date().toISOString() } : null;
 
     if (!selectedShift && workflow === "remove") {
@@ -1505,6 +1516,7 @@ export default function Home() {
   }
 
   function resetTransientView() {
+    setReinforcementEditing(false); setReinforcementError("");
     setFocusedAbsence(null);
     setAbsenceStart(""); setAbsenceEnd(""); setAbsenceReason(""); setAbsenceError(""); setAbsenceSaved(false);
     calculationAbortRef.current?.abort();
@@ -1679,11 +1691,12 @@ export default function Home() {
     const targetPeriod = periodForMonth(targetYear, targetMonthNumber);
     const isTest = employees.some((employee) => newEmployeeIds.includes(employee.id) && employee.isTest);
     const carryIn = carryInAssignment(source.months, targetYear, targetMonthNumber, isTest);
-    const blank = createBlankMonthSchedule(targetPeriod, carryIn?.employeeId ?? "").map((shift) => (
+    let blank = createBlankMonthSchedule(targetPeriod, carryIn?.employeeId ?? "").map((shift) => (
       shift.start < targetPeriod.start && carryIn
         ? { ...shift, plannedEmployeeId: carryIn.plannedEmployeeId }
         : shift
     ));
+    blank = synchronizeCarryIn({ schedule: blank, baselineSchedule: [] }, targetPeriod, carryIn).schedule;
     if (!newEmployeeIds.length || newEmployeeIds.length > MAX_MONTH_EMPLOYEES) return;
     const draftRecord = serializeMonthRecord({ isTest, schedule: blank, baselineSchedule: [], changeEvents: [], historyCount: 0, status: "draft", draftMode: newDraftMode, employeeIds: newEmployeeIds, lockedEmployeeIds: [] });
     const nextStore: PersistedMonthStore = {
@@ -1712,18 +1725,18 @@ export default function Home() {
   function assignDraftShift(shiftId: string, employeeId: string) {
     if (scheduleReadOnly) return;
     if (scheduleStatus !== "draft" || scheduleReadOnly) return;
-    const target = schedule.find((shift) => shift.id === shiftId);
+    const primary = schedule.find((shift) => shift.id === shiftId.replace(/:2$/, "") && shift.slot !== 2);
+    const slots = primary ? shiftSlots(schedule, primary.id) : [];
+    const target = slots.find((shift) => !shift.employeeId) ?? (primary && slots.length < 2 ? secondSlot(primary) : undefined);
     const employee = employees.find((item) => item.id === employeeId);
-    if (!target || !employee || !employeeIds.includes(employeeId) || !isEmployeeAvailable(employee, target)) {
+    if (!target || (target.slot === 2 && !slots.some((shift) => shift.slot === 2) && target.start < period.start && carryInAssignment(monthStore.months, period.year, period.month, monthIsTest)) || slots.some((shift) => shift.employeeId === employeeId) || !employee || !employeeIds.includes(employeeId) || !isEmployeeAvailable(employee, target)) {
       setDraftPublishError("Эта смена вне периода работы сотрудника"); return;
     }
     if (shiftAbsences(employeeId, target, activeAbsences).length) {
       setDraftPublishError("Этот сотрудник недоступен в выбранную смену.");
       return;
     }
-    setSchedule((current) => current.map((shift) => shift.id === shiftId
-      ? { ...shift, employeeId, plannedEmployeeId: employeeId }
-      : shift));
+    setSchedule((current) => { const withSlot = current.some((shift) => shift.id === target.id) ? current : [...current, target]; return withSlot.map((shift) => shift.id === target.id ? { ...shift, employeeId, plannedEmployeeId: employeeId } : shift); });
     setDraftPublishError("");
   }
 
@@ -1750,6 +1763,23 @@ export default function Home() {
     setAbsenceError(""); setDraftPublishError(""); setAbsenceSaved(true);
     setAbsenceStart(""); setAbsenceEnd(""); setAbsenceReason("");
     return true;
+  }
+
+  function openReinforcementSelection() {
+    setReinforcementSelection(schedule.filter((shift) => shift.slot === 2 && shift.start >= period.start && shift.start < period.end).map(baseShiftId));
+    setReinforcementError(""); setGeneratorOpen(false); setReinforcementEditing(true);
+  }
+
+  function toggleReinforcement(key: string) {
+    const secondary = shiftSlots(schedule, key).find((shift) => shift.slot === 2);
+    if (reinforcementSelection.includes(key) && secondary?.employeeId) { setReinforcementError("Сначала снимите второе назначение этой смены"); return; }
+    setReinforcementError(""); setReinforcementSelection((keys) => keys.includes(key) ? keys.filter((item) => item !== key) : [...keys, key]);
+  }
+
+  function finishReinforcementSelection(save: boolean) {
+    if (save) setSchedule((current) => setReinforcements(current, reinforcementSelection, period.start, period.end));
+    setReinforcementEditing(false); setReinforcementError(""); setGeneratorOpen(true);
+    setGenerationOptions([]); setGenerationPreview(null); setGenerationError("");
   }
 
   function openGenerator() {
@@ -2006,9 +2036,9 @@ export default function Home() {
 
       for (const day of days) {
         const firstColumn = 2 + (day - 1) * 3;
-        writeShiftMarker(scheduleById.get(shiftIdFor(period, day - 1, "night")), firstColumn, nightShiftStyle);
-        writeShiftMarker(scheduleById.get(shiftIdFor(period, day, "day")), firstColumn + 1, dayShiftStyle);
-        writeShiftMarker(scheduleById.get(shiftIdFor(period, day, "night")), firstColumn + 2, nightShiftStyle);
+        shiftSlots(displaySchedule, shiftIdFor(period, day - 1, "night")).forEach((shift) => writeShiftMarker(shift, firstColumn, nightShiftStyle));
+        shiftSlots(displaySchedule, shiftIdFor(period, day, "day")).forEach((shift) => writeShiftMarker(shift, firstColumn + 1, dayShiftStyle));
+        shiftSlots(displaySchedule, shiftIdFor(period, day, "night")).forEach((shift) => writeShiftMarker(shift, firstColumn + 2, nightShiftStyle));
       }
 
       sheet.getCell(`C${summaryHeaderRow}`).value = "Д3";
@@ -2025,8 +2055,8 @@ export default function Home() {
           if (shift.employeeId !== employeeId) continue;
           if (shift.type === "N") {
             for (const day of days) {
-              if (scheduleById.get(shiftIdFor(period, day - 1, "night"))?.id === shift.id) nightHalves += 1;
-              if (scheduleById.get(shiftIdFor(period, day, "night"))?.id === shift.id) nightHalves += 1;
+              if (shiftIdFor(period, day - 1, "night") === baseShiftId(shift)) nightHalves += 1;
+              if (shiftIdFor(period, day, "night") === baseShiftId(shift)) nightHalves += 1;
             }
           }
           const overlapStart = Math.max(shift.start.getTime(), period.start.getTime());
@@ -2113,12 +2143,21 @@ export default function Home() {
     resetTransientView(); setStaffProfileId(person); setEmployeeMonthId(null); setActiveSection("Сотрудники");
   }
 
+  const reinforcedShifts = schedule.filter((shift) => shift.slot === 2 && shift.start >= period.start && shift.start < period.end).sort((a,b) => a.start.getTime() - b.start.getTime());
+  function reinforcementControl(day: number, kind: ShiftKind) {
+    const key = shiftIdFor(period, day, kind);
+    const selected = reinforcementEditing ? reinforcementSelection.includes(key) : reinforcedShifts.some((shift) => baseShiftId(shift) === key);
+    const count = shiftSlots(displaySchedule, key).filter((shift) => shift.employeeId).length;
+    if (!reinforcementEditing && !selected) return null;
+    return <button type="button" disabled={!reinforcementEditing} className={cn("reinforcement-shift", selected && "reinforcement-selected")} onClick={() => toggleReinforcement(key)} aria-pressed={selected} aria-label={`${selected ? "Снять усиление" : "Усилить"}: ${day}, ${kind === "day" ? "дневная" : "ночная"} смена`}>{kind === "day" ? "День" : "Ночь"}{selected && <strong>{reinforcementEditing ? "×2" : `${count}/2`}</strong>}</button>;
+  }
+
   const gridStyle = { gridTemplateColumns: `${NAME_WIDTH}px repeat(${dayCount}, ${DAY_WIDTH}px)` };
   const monthShifts = schedule.filter((shift) => shift.start >= period.start && shift.start < period.end);
   const assignedMonthShifts = monthShifts.filter((shift) => Boolean(shift.employeeId)).length;
   const boundaryShiftAssigned = schedule.some((shift) => shift.start < period.start && shift.end > period.start && Boolean(shift.employeeId));
   const generationStart = addDays(period.start, GENERATION_SEED_DAYS);
-  const generationSeedShifts = monthShifts.filter((shift) => shift.start < generationStart);
+  const generationSeedShifts = monthShifts.filter((shift) => shift.slot !== 2 && shift.start < generationStart);
   const assignedGenerationSeedShifts = generationSeedShifts.filter((shift) => Boolean(shift.employeeId)).length;
   const futureDraftShifts = monthShifts.filter((shift) => shift.start >= generationStart);
   const assignedFutureDraftShifts = futureDraftShifts.filter((shift) => Boolean(shift.employeeId)).length;
@@ -2137,7 +2176,7 @@ export default function Home() {
   const requestedNewMonthKey = monthKey(Number(newMonthYear), Number(newMonthNumber));
   const requestedMonthExists = Boolean(monthStore.months[requestedNewMonthKey]);
   const requestedCarryIn = carryInAssignment(monthStore.months, Number(newMonthYear), Number(newMonthNumber), employees.some((employee) => newEmployeeIds.includes(employee.id) && employee.isTest));
-  const selectedCarryInMissing = Boolean(requestedCarryIn && !newEmployeeIds.includes(requestedCarryIn.employeeId));
+  const selectedCarryInMissing = Boolean(requestedCarryIn && (!newEmployeeIds.includes(requestedCarryIn.employeeId) || requestedCarryIn.secondary && !newEmployeeIds.includes(requestedCarryIn.secondary.employeeId)));
   const changeMarkers = useMemo(() => {
     const previousPositions: number[] = [];
     return changeEvents.map((change) => {
@@ -2197,7 +2236,7 @@ export default function Home() {
                 <Button variant="outline" className="cancel-draft-button" onClick={() => setCancelDraftConfirmOpen(true)}>Отменить создание</Button>
                 <Button className="publish-draft-button" onClick={publishDraft}><LockKeyhole />Закрепить план</Button>
               </> : <Button variant="outline" className="new-month-button" onClick={openNewMonthDialog}><Plus />Создать месяц</Button>)}
-              {activeSection === "График" && <>
+              {activeSection === "График" && !reinforcementEditing && <>
               <Button variant="outline" size="icon" onClick={() => navigationPreviousKey && navigateMonth(navigationPreviousKey)} disabled={!navigationPreviousKey} aria-label="Предыдущий сохранённый месяц"><ChevronLeft /></Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild><button type="button" className="month-button"><CalendarDays />{monthLabel}<small>{monthIsTest ? "Тестовый · " : ""}{lifecycleLabel(currentLifecycle)}</small></button></DropdownMenuTrigger>
@@ -2233,6 +2272,7 @@ export default function Home() {
             {activeSection === "Сотрудники" ? staffProfile ? <EmployeeProfile key={staffProfile.id} employee={staffProfile} months={employeeMonths(staffProfile.id)} currentMonthLabel={formatMonthLabel(calendarYear, calendarMonth)} onBack={() => setStaffProfileId(null)} onOpenMonth={(key) => openEmployeeMonth(staffProfile.id, key)} onEdit={() => { setEmployeeEditorId(staffProfile.id); setStaffProfileId(null); }} overview={profileCurrent?.employeeIds.includes(staffProfile.id) ? <>{renderEmployeeMonthStats(staffProfile.id, profileCurrent.schedule, periodForMonth(calendarYear, calendarMonth), profileCurrent.employeeRates[staffProfile.id] ?? (profileCurrent.status === "draft" ? staffProfile.hourlyRate : undefined), formatMonthLabel(calendarYear, calendarMonth))}<Button variant="outline" onClick={() => openEmployeeMonth(staffProfile.id, calendarKey)}>Открыть график месяца</Button></> : <p className="staff-empty">Сотрудник не включён в график текущего месяца</p>} /> : <EmployeesPanel employees={employees} memberIds={employeeIds} monthLabel={monthLabel} onSave={saveEmployee} onArchive={archiveStaff} onDelete={deleteTestEmployee} onMembership={openMembership} membershipReadOnly={scheduleReadOnly} isUsed={isEmployeeUsed} onOpen={setStaffProfileId} initialEditId={employeeEditorId} onEditConsumed={() => setEmployeeEditorId(null)} /> : <>
             {employeeMonthId && <div className="employee-month-banner"><Button variant="ghost" onClick={backToEmployeeProfile}><ChevronLeft />Карточка сотрудника</Button><strong>{employeeNameById[employeeMonthId]}</strong><span>{currentLifecycle === "completed" ? "Просмотр истории" : "Просмотр месяца"}</span></div>}
             {employeeMonthId && renderEmployeeMonthStats(employeeMonthId, displaySchedule, period, monthEmployeeRates[employeeMonthId] ?? (scheduleStatus === "draft" ? employees.find((employee) => employee.id === employeeMonthId)?.hourlyRate : undefined), monthLabel)}
+            {reinforcementEditing && <div className="reinforcement-bar"><span><strong>Усиление смен</strong><small>Выбрано: {reinforcementSelection.length}</small></span>{reinforcementError && <p role="alert">{reinforcementError}</p>}<Button variant="outline" onClick={() => finishReinforcementSelection(false)}>Отмена</Button><Button onClick={() => finishReinforcementSelection(true)}>Готово</Button></div>}
             <section className="schedule-card" aria-labelledby="schedule-title">
               <div className="schedule-toolbar">
                 <div><h2 id="schedule-title">{scheduleStatus === "draft" ? "Черновик исходного графика" : "Расписание"}</h2><p>{scheduleStatus === "draft" ? draftMode === "manual" ? "Ручной режим" : "Заполнение по образцу" : "Дневная смена 08:00–20:00 · ночная смена 20:00–08:00"}</p></div>
@@ -2247,7 +2287,7 @@ export default function Home() {
                   <div><WandSparkles /><span><strong>{draftMode === "manual" || draftGenerationStarted ? `${assignedMonthShifts} из ${monthShifts.length} смен месяца назначено` : `Первые ${assignedGenerationSeedShifts} из ${generationSeedShifts.length} смен заполнены`}</strong></span></div>
                   <div className="draft-progress-actions">
                     {draftPublishError && <p><TriangleAlert />{draftPublishError}</p>}
-                    <Button type="button" size="sm" onClick={openGenerator} disabled={draftMode === "manual" ? assignedMonthShifts === monthShifts.length || generating : !generationSeedReady || generating}><WandSparkles />{draftMode === "manual" ? "Заполнить свободные смены" : draftGenerationStarted ? "Пересчитать" : "Рассчитать продолжение"}</Button>
+                    <Button type="button" size="sm" onClick={openGenerator} disabled={draftMode === "manual" ? generating : !generationSeedReady || generating}><WandSparkles />{draftMode === "manual" ? "Заполнить свободные смены" : draftGenerationStarted ? "Пересчитать" : "Рассчитать продолжение"}</Button>
                   </div>
                 </div>
               )}
@@ -2262,7 +2302,7 @@ export default function Home() {
                     </div>)}
                   </div>}
                   <div className="sticky-name header-name"><span>Сотрудники</span><span className="header-count">{visiblePeople.length}</span></div>
-                  {days.map((day) => { const info = dayInfo(period, day); const locked = scheduleStatus === "draft" && draftMode === "seed" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview; return <div key={`date-${day}`} className={cn("date-header", info.weekend && "weekend-header", locked && "draft-future-locked")}><strong>{day}</strong><span>{info.weekday}</span></div>; })}
+                  {days.map((day) => { const info = dayInfo(period, day); const locked = scheduleStatus === "draft" && draftMode === "seed" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview; return <div key={`date-${day}`} className={cn("date-header", info.weekend && "weekend-header", locked && "draft-future-locked")}><strong>{day}</strong><span>{info.weekday}</span><div className="reinforcement-date-controls">{reinforcementControl(day, "day")}{reinforcementControl(day, "night")}</div></div>; })}
 
                   <div className="sticky-name time-name"><Clock3 />Время</div>
                   {days.map((day) => { const info = dayInfo(period, day); const locked = scheduleStatus === "draft" && draftMode === "seed" && day > GENERATION_SEED_DAYS && !draftGenerationStarted && !generationPreview; return <div key={`time-${day}`} className={cn("time-cell", info.weekend && "weekend-cell", locked && "draft-future-locked")}><span>00–08</span><span>08–20</span><span>20–24</span></div>; })}
@@ -2274,13 +2314,13 @@ export default function Home() {
                     return [
                       <div key={`${person}-name`} className={cn("sticky-name employee-name employee-name-row", isHighlighted && "employee-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)}>
                         {scheduleStatus === "draft" && !scheduleReadOnly && <button type="button" className={cn("employee-lock", lockedEmployeeIds.includes(person) && "employee-lock-active")} onClick={() => setLockedEmployeeIds((current) => current.includes(person) ? current.filter((id) => id !== person) : [...current, person])} title={lockedEmployeeIds.includes(person) ? `Разрешить автоматические назначения для ${employeeNameById[person]}` : `Запретить автоматические назначения для ${employeeNameById[person]}`} aria-label={lockedEmployeeIds.includes(person) ? `Разблокировать ${employeeNameById[person]}` : `Заблокировать ${employeeNameById[person]}`}>{lockedEmployeeIds.includes(person) ? <LockKeyhole /> : <LockOpen />}</button>}
-                        <button type="button" className="employee-name-action" aria-label={`Открыть карточку ${employeeNameById[person]}`} onClick={() => openEmployeeSheet(person)}><span className={`employee-avatar avatar-${personIndex % 4 + 1}`}>{personIndex + 1}</span><span className="employee-name-label"><span className="employee-surname">{compactEmployeeName(employeeNameById[person]).surname}</span><span className="employee-initials">{compactEmployeeName(employeeNameById[person]).initials}</span></span><ChevronRight className="employee-chevron" /></button>
+                        <button type="button" className="employee-name-action" aria-label={`Открыть карточку ${employeeNameById[person]}`} onClick={() => { if (!reinforcementEditing) openEmployeeSheet(person); }}><span className={`employee-avatar avatar-${personIndex % 4 + 1}`}>{personIndex + 1}</span><span className="employee-name-label"><span className="employee-surname">{compactEmployeeName(employeeNameById[person]).surname}</span><span className="employee-initials">{compactEmployeeName(employeeNameById[person]).initials}</span></span><ChevronRight className="employee-chevron" /></button>
                       </div>,
                       ...days.map((day) => {
                         const info = dayInfo(period, day);
-                        const leftShift = displaySchedule.find((shift) => shift.id === shiftIdFor(period, day - 1, "night"));
-                        const dayShift = displaySchedule.find((shift) => shift.id === shiftIdFor(period, day, "day"));
-                        const nightShift = displaySchedule.find((shift) => shift.id === shiftIdFor(period, day, "night"));
+                        const leftShift = shiftSlots(displaySchedule, shiftIdFor(period, day - 1, "night")).find((shift) => shift.employeeId === person);
+                        const dayShift = shiftSlots(displaySchedule, shiftIdFor(period, day, "day")).find((shift) => shift.employeeId === person);
+                        const nightShift = shiftSlots(displaySchedule, shiftIdFor(period, day, "night")).find((shift) => shift.employeeId === person);
                         const leftOwner = leftShift?.employeeId;
                         const dayOwner = dayShift?.employeeId;
                         const nightOwner = nightShift?.employeeId;
@@ -2303,7 +2343,7 @@ export default function Home() {
 
             {employeeMonthId && renderMonthAbsences(employeeMonthId)}
             <section className="summary-grid" aria-label="Сводка графика">
-              <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>{assignedMonthShifts} из {monthShifts.length}</strong><span>смены закрыты</span></div></article>
+              <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>{assignedMonthShifts} из {monthShifts.length}</strong><span>назначения заполнены</span></div></article>
               <article className="summary-card"><span className="summary-icon cyan"><Clock3 /></span><div><strong>12 часов</strong><span>продолжительность смены</span></div></article>
               <article className="summary-card"><span className="summary-icon violet"><Users /></span><div><strong>{visiblePeople.length} сотрудника</strong><span>в текущем графике</span></div></article>
               <article className="summary-card"><span className="summary-icon green"><ShieldCheck /></span><div><strong>{currentValidation.valid ? "Без нарушений" : currentValidation.issues.length}</strong><span>обязательные правила</span></div></article>
@@ -2362,6 +2402,7 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="generation-mode-section">
+                  <div className="reinforcement-settings"><Button variant="outline" onClick={openReinforcementSelection}><Users />Усиление смен{reinforcedShifts.length ? ` · ${reinforcedShifts.length}` : ""}</Button>{reinforcedShifts.length > 0 && <ul>{reinforcedShifts.map((shift) => <li key={shift.id}>{changeDateLabel(shift.id)} · 2 сотрудника</li>)}</ul>}</div>
                   <h3>{draftMode === "manual" ? "Автоматическое заполнение" : "Как продолжить расписание?"}</h3>
                   {draftMode === "seed" && <button type="button" className={cn("generation-mode-card", generationMode === "pattern" && "generation-mode-card-selected")} onClick={() => { setGenerationMode("pattern"); setGenerationError(""); }}>
                     <span className="generation-mode-icon"><History /></span><span><strong>Продолжить заданную схему</strong><small>Максимально повторить порядок дневных и ночных смен, заданный в первых восьми днях.</small></span><i />
@@ -2375,7 +2416,7 @@ export default function Home() {
               )}
             </div>
             <SheetFooter className="sheet-footer-custom">
-              {generating ? <><Button variant="outline" onClick={closeGenerator}>Остановить расчёт</Button><Button disabled><Loader2 className="animate-spin" />Идёт расчёт…</Button></> : generationOptions.length ? <><Button variant="outline" onClick={() => { setGenerationOptions([]); setSelectedGenerationKey(""); setGenerationPreview(null); setGenerationError(""); }}>Назад</Button><Button onClick={applyGeneratedSchedule}><CheckCircle2 />Применить продолжение</Button></> : <><Button variant="outline" onClick={closeGenerator}>Отмена</Button><Button onClick={calculateGeneratedSchedule}><WandSparkles />Рассчитать</Button></>}
+              {generating ? <><Button variant="outline" onClick={closeGenerator}>Остановить расчёт</Button><Button disabled><Loader2 className="animate-spin" />Идёт расчёт…</Button></> : generationOptions.length ? <><Button variant="outline" onClick={() => { setGenerationOptions([]); setSelectedGenerationKey(""); setGenerationPreview(null); setGenerationError(""); }}>Назад</Button><Button onClick={applyGeneratedSchedule}><CheckCircle2 />Применить продолжение</Button></> : <><Button variant="outline" onClick={closeGenerator}>Отмена</Button><Button onClick={calculateGeneratedSchedule}><WandSparkles />Рассчитать варианты</Button></>}
             </SheetFooter>
           </SheetContent>
         </Sheet>

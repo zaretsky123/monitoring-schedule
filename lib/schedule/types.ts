@@ -12,6 +12,7 @@ export type Employee = {
 };
 
 export type Shift = {
+  slot?: 2;
   id: string;
   type: ShiftType;
   start: Date;

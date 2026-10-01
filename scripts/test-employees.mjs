@@ -54,3 +54,45 @@ for (const option of result.options) {
   assert.equal(Object.keys(option.metrics.workHours).length, 8);
 }
 console.log(`Сотрудники: даты начала/увольнения, одинаковые ФИО, тестовый флаг, расчёт с 8 участниками проверены (${((performance.now() - started) / 1000).toFixed(2)} с).`);
+
+const { secondSlot, setReinforcements, shiftSlots } = await import('../public/workers/slots.js');
+const { solveSchedule } = await import('../public/workers/solver.js');
+const { coefficientHoursForEmployee } = await import('../public/workers/coefficients.js');
+const manual = blank.map(s=>({...s}));
+for (const day of [1,9,17,25]) Object.assign(manual.find(s=>s.id===`2026-10-${String(day).padStart(2,'0')}:D`), {employeeId:'employee-0',plannedEmployeeId:'employee-0'});
+let reinforced = setReinforcements(manual,['2026-10-01:D','2026-10-03:N','2026-10-12:D'],period.start,period.end);
+Object.assign(reinforced.find(s=>s.id==='2026-10-01:D:2'),{employeeId:'employee-1',plannedEmployeeId:'employee-1'});
+const absent = [{employeeId:'employee-2',start:new Date('2026-10-03T20:00:00Z'),end:new Date('2026-10-04T08:00:00Z')}];
+const dual = generateSchedule({schedule:reinforced,employees,period,mode:'optimal',manual:true,lockedEmployeeIds:['employee-0'],absences:absent,maxOptions:1});
+assert.equal(dual.found,true,dual.reason);
+const dualSchedule=dual.options[0].schedule;
+assert.equal(dualSchedule.filter(s=>s.employeeId==='employee-0'&&s.start>=period.start&&s.start<period.end).length,4,'Locked employee keeps exactly four manual shifts');
+assert.equal(dualSchedule.find(s=>s.id==='2026-10-01:D:2').employeeId,'employee-1','Second manual assignment preserved');
+for (const id of ['2026-10-01:D','2026-10-03:N','2026-10-12:D']) {
+ const slots=shiftSlots(dualSchedule,id);assert.equal(slots.length,2);assert.ok(slots.every(s=>s.employeeId));assert.notEqual(slots[0].employeeId,slots[1].employeeId);
+}
+assert.equal(validateSchedule({schedule:dualSchedule,employees,period,absences:absent}).valid,true);
+assert.ok(shiftSlots(dualSchedule,'2026-10-03:N').every(s=>s.employeeId!=='employee-2'));
+const same=dualSchedule.map(s=>s.id==='2026-10-01:D:2'?{...s,employeeId:'employee-0'}:s);
+assert.equal(validateSchedule({schedule:same,employees,period}).valid,false,'Cannot assign same employee twice');
+assert.equal(setReinforcements(reinforced,[],period.start,period.end).filter(s=>s.slot===2).length,1,'Removing preference preserves manually assigned second slot');
+const seedDual=generateSchedule({schedule:reinforced.map(s=>({...s,employeeId:s.start<addDays(period.start,8)?s.employeeId:'',plannedEmployeeId:s.start<addDays(period.start,8)?s.plannedEmployeeId:''})),employees,period,mode:'pattern',manual:false,maxOptions:1});
+// Incomplete primary seed is still rejected, even when reinforcement is selected.
+assert.equal(seedDual.found,false);
+const extraEmployees=[...employees,{id:'replacement-a',name:'Замена А',active:true},{id:'replacement-b',name:'Замена Б',active:true}];
+const base=result.options[0].schedule;
+const primary=base.find(s=>s.id==='2026-10-10:D');
+const extra={...secondSlot(primary),employeeId:'replacement-a',plannedEmployeeId:'replacement-a'};
+const replacement=solveSchedule({schedule:[...base,extra],employees:extraEmployees,period,absences:[{employeeId:'replacement-a',start:extra.start,end:extra.end}],recalculationStart:extra.start,requiredAssignments:{[extra.id]:'replacement-b'},maxExtraChanges:0,maxOptions:1});
+assert.equal(replacement.found,true,replacement.reason);
+assert.equal(replacement.options[0].schedule.find(s=>s.id===primary.id).employeeId,primary.employeeId,'Replacing second employee preserves first');
+assert.equal(replacement.options[0].schedule.find(s=>s.id===extra.id).employeeId,'replacement-b');
+assert.equal(coefficientHoursForEmployee([primary,extra],'replacement-a',period).payableHours,10,'Second employee receives own paid hours');
+console.log('Два сотрудника: усиленные дневные/ночные смены, 4 ручные смены с замочком, недоступность, отдельная замена и коэффициенты проверены.');
+
+const seeded = setReinforcements(base.map(s=>s.start>=addDays(period.start,8)&&s.start<period.end?{...s,employeeId:"",plannedEmployeeId:""}:{...s}),['2026-10-03:N','2026-10-16:D'],period.start,period.end);
+const seededResult=generateSchedule({schedule:seeded,employees,period,mode:'pattern',maxOptions:1});
+assert.equal(seededResult.found,true,seededResult.reason);
+assert.equal(validateSchedule({schedule:seededResult.options[0].schedule,employees,period}).valid,true);
+for(const id of ['2026-10-03:N','2026-10-16:D']) assert.equal(new Set(shiftSlots(seededResult.options[0].schedule,id).map(s=>s.employeeId)).size,2);
+console.log('Усиление в режиме образца: заполнение второго места в первых восьми днях и после них проверено.');

@@ -1,5 +1,6 @@
 import { addDays, fullCalendarDaysBetween, hoursBetween, overlaps, startOfUtcWeek } from "./calendar";
 import type { Absence, Employee, Period, Shift, ValidationIssue } from "./types";
+import { baseShiftId } from "./slots";
 import { isEmployeeAvailable } from "./employees";
 
 function issue(code: string, message: string, details: Record<string, unknown> = {}): ValidationIssue {
@@ -17,10 +18,14 @@ function validateCoverage(schedule: Shift[], period: Period) {
     if (!shift.employeeId) issues.push(issue("UNCOVERED_SHIFT", `Смена ${shift.id} не закрыта`, { shiftId: shift.id }));
     if (seen.has(shift.id)) issues.push(issue("DUPLICATE_SHIFT", `Смена ${shift.id} продублирована`, { shiftId: shift.id }));
     seen.add(shift.id);
+    if (shift.slot === 2) {
+      const primary = schedule.find((item) => item.slot !== 2 && item.id === baseShiftId(shift));
+      if (!primary || primary.type !== shift.type || primary.start.getTime() !== shift.start.getTime() || primary.end.getTime() !== shift.end.getTime() || shift.id !== `${primary.id}:2`) issues.push(issue("INVALID_SECOND_SLOT", "Второе назначение не соответствует основной смене", { shiftId: shift.id }));
+    }
     if (hoursBetween(shift.start, shift.end) !== 12) issues.push(issue("INVALID_SHIFT_LENGTH", `Смена ${shift.id} длится не 12 часов`, { shiftId: shift.id }));
   }
 
-  const relevant = schedule.filter((shift) => overlaps(shift.start, shift.end, period.start, period.end)).sort((a, b) => a.start.getTime() - b.start.getTime());
+  const relevant = schedule.filter((shift) => shift.slot !== 2 && overlaps(shift.start, shift.end, period.start, period.end)).sort((a, b) => a.start.getTime() - b.start.getTime());
   let cursor = period.start;
   for (const shift of relevant) {
     const coveredStart = shift.start < period.start ? period.start : shift.start;
