@@ -1,4 +1,6 @@
 @import "tailwindcss";
+
+
 @import "tw-animate-css";
 @import "../vendor/shadcn-tailwind-4.13.0.css";
 
@@ -512,3 +514,32 @@ button { font: inherit; }
   .reset-dialog { padding: 22px; }
   .cancel-draft-dialog-actions { grid-template-columns: 1fr; }
 }
+
+.staff-card { background: white; border: 1px solid #e3e9f2; border-radius: 18px; overflow: hidden; }
+.staff-heading { display: flex; gap: 20px; justify-content: space-between; align-items: center; padding: 26px 28px; }
+.staff-heading h2 { font-size: 20px; font-weight: 700; color: #17243c; }
+.staff-heading p { margin-top: 5px; font-size: 13px; color: #69788f; }
+.staff-month { display: flex; gap: 14px; align-items: center; padding: 18px 28px; background: #f5f8fe; border-block: 1px solid #e8edf5; }
+.staff-month > svg { width: 21px; color: #5071c3; }
+.staff-month > span { flex: 1; }
+.staff-month strong, .staff-month small { display: block; }
+.staff-month strong { font-size: 14px; }.staff-month small { margin-top: 4px; font-size: 12px; color: #69788f; }
+.staff-filters { display: flex; gap: 12px; padding: 22px 28px; }
+.staff-search { display: flex; align-items: center; gap: 10px; max-width: 400px; flex: 1; border: 1px solid #dce3ef; border-radius: 9px; padding: 0 12px; }
+.staff-search svg { width: 17px; color: #8b98ad; }.staff-search input { width: 100%; min-width: 0; border: 0; background: transparent; padding: 10px 0; outline: none; font-size: 13px; }
+.staff-filters select, .staff-form input:not([type="checkbox"]), .staff-form select { padding: 10px 12px; border: 1px solid #dce3ef; border-radius: 9px; background: white; font-size: 13px; color: #24354d; }
+.staff-search:focus-within, .staff-form input:focus, .staff-form select:focus { outline: 2px solid #8eaff0; outline-offset: 2px; }
+.staff-table-wrap { overflow-x: auto; }.staff-table { width: 100%; min-width: 720px; border-collapse: collapse; text-align: left; }
+.staff-table th { font-size: 11px; font-weight: 600; letter-spacing: .03em; color: #8290a5; background: #f9fbfd; padding: 12px 22px; border-block: 1px solid #edf1f6; }
+.staff-table td { padding: 17px 22px; font-size: 13px; color: #51617a; border-bottom: 1px solid #edf1f6; vertical-align: middle; }.staff-table td:first-child { padding-left: 28px; }.staff-table td strong { color: #24354d; font-weight: 600; }
+.staff-table td small { display: block; margin-top: 5px; font-size: 11px; }.staff-id { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8996aa; }
+.staff-test-badge { margin-left: 8px; display: inline-block; font-size: 10px; color: #7b54ae; background: #f2ecfb; border-radius: 5px; padding: 3px 6px; }
+.staff-status { font-size: 11px; padding: 5px 9px; border-radius: 7px; white-space: nowrap; }.staff-working { background: #eaf7ef; color: #328653; }.staff-dismissed { background: #f0f2f6; color: #78849a; }
+.staff-actions { display: flex; gap: 3px; justify-content: flex-end; }.staff-actions svg { width: 16px; }
+.staff-empty { display: grid; justify-items: center; padding: 55px 20px; gap: 10px; color: #71809a; }.staff-empty svg { width: 32px; height: 32px; color: #a6b3c8; }.staff-empty p { font-size: 13px; }
+.staff-form { display: flex; flex-direction: column; gap: 20px; }.staff-form > label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-weight: 600; color: #3c4e69; }.staff-form small { font-size: 12px; color: #78869b; font-weight: 400; line-height: 1.6; }
+.staff-form > .staff-test-toggle { flex-direction: row; align-items: flex-start; gap: 12px; padding: 16px; background: #f6f8fd; border: 1px solid #e3e9f3; border-radius: 11px; }.staff-test-toggle input { margin-top: 3px; width: 18px; height: 18px; accent-color: #597bce; }.staff-test-toggle strong, .staff-test-toggle small { display: block; }.staff-test-toggle small { margin-top: 4px; }
+.staff-form-id { overflow-wrap: anywhere; font-size: 11px; color: #8794a8; }.staff-form-footer { display: flex; justify-content: flex-end; gap: 10px; padding-top: 12px; border-top: 1px solid #e8edf5; }
+.staff-error { margin: 4px 0; padding: 12px; color: #bd4545; background: #fff3f3; border-radius: 8px; font-size: 13px; }.staff-card > .staff-error { margin: 0 28px 16px; }
+.staff-card ~ * { margin-top: 20px; }
+@media (max-width: 800px) { .staff-heading { align-items: flex-start; flex-direction: column; padding: 20px; }.staff-month { flex-wrap: wrap; padding: 16px 20px; }.staff-filters { padding: 18px 20px; flex-wrap: wrap; }.staff-search { max-width: none; flex-basis: 100%; } }

@@ -1,4 +1,5 @@
 import { addDays, fullCalendarDaysBetween } from "./calendar";
+import { isEmployeeAvailable } from "./employees";
 import { validateSchedule } from "./validator";
 import type { Absence, Employee, GeneratedScheduleOption, GenerationMode, Period, Shift } from "./types";
 
@@ -135,7 +136,7 @@ export function generateSchedule({
   maxOptions?: number;
   beamWidth?: number;
 }) {
-  const activeEmployees = employees.filter((employee) => employee.active);
+  const activeEmployees = employees.filter((employee) => employee.active || employee.endDateTime);
   if (!activeEmployees.length) return { found: false as const, options: [], reason: "Нет активных сотрудников для формирования графика." };
   if (manual) return generateManualSchedule(schedule, activeEmployees, period, lockedEmployeeIds, absences, maxOptions, beamWidth);
   const seedEnd = addDays(period.start, seedDays);
@@ -189,6 +190,8 @@ export function generateSchedule({
     for (const state of beam) {
       for (let employeeIndex = 0; employeeIndex < activeEmployees.length; employeeIndex += 1) {
         if (lockedEmployeeIds.includes(activeEmployees[employeeIndex].id)) continue;
+        if (!isEmployeeAvailable(activeEmployees[employeeIndex], shift)) continue;
+        if (absences.some((absence) => absence.employeeId === activeEmployees[employeeIndex].id && shift.start < absence.end && shift.end > absence.start)) continue;
         const nextBlock = transitionSequence(state, employeeIndex, shift);
         if (nextBlock === null) continue;
         const next: SearchState = {
@@ -225,7 +228,7 @@ export function generateSchedule({
       return { ...shift, employeeId, plannedEmployeeId: employeeId };
     });
     const validationSchedule = candidate.filter((shift) => shift.employeeId || (shift.start >= period.start && shift.start < period.end));
-    const validation = validateSchedule({ schedule: validationSchedule, employees: activeEmployees, period });
+    const validation = validateSchedule({ schedule: validationSchedule, employees: activeEmployees, period, absences });
     if (!validation.valid) continue;
     const metrics = optionMetrics(candidate, activeEmployees, period, mode, patternTargets);
     const key = mutable.map((shift) => assignmentById.get(shift.id)).join("|");
@@ -300,7 +303,7 @@ function generateManualSchedule(
   for (const shift of slots) {
     const nextStates: SearchState[] = [];
     const candidates = shift.employeeId ? [indexById.get(shift.employeeId)!] : employees
-      .map((employee, index) => locked.has(employee.id) || absences.some((absence) => absence.employeeId === employee.id && shift.start < absence.end && shift.end > absence.start) ? -1 : index).filter((index) => index >= 0);
+      .map((employee, index) => !isEmployeeAvailable(employee, shift) || locked.has(employee.id) || absences.some((absence) => absence.employeeId === employee.id && shift.start < absence.end && shift.end > absence.start) ? -1 : index).filter((index) => index >= 0);
     for (const state of beam) for (const index of candidates) {
       const block = transitionSequence(state, index, shift);
       if (block === null) continue;

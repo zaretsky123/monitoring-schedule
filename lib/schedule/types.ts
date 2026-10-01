@@ -4,6 +4,10 @@ export type Employee = {
   id: string;
   name: string;
   active: boolean;
+  isTest?: boolean;
+  startDate?: string;
+  endDateTime?: string;
+  archivedAt?: string;
 };
 
 export type Shift = {

@@ -1,4 +1,5 @@
 import { hoursBetween, overlaps } from "./calendar";
+import { isEmployeeAvailable } from "./employees";
 import { countMonthlyOffPairs, describeWorkBlocks, validateSchedule } from "./validator";
 import type { Absence, Employee, Period, ScheduleOption, Shift } from "./types";
 
@@ -35,7 +36,7 @@ function enumerateAssignments(
   const required = requiredAssignments[shift.id];
   const mutableIds = new Set(positions.map((position) => position.id));
   const choices = employees.filter((employee) => {
-    if (!employee.active) return false;
+    if (!isEmployeeAvailable(employee, shift)) return false;
     if (required ? employee.id !== required : employee.id === shift.employeeId) return false;
     if (absences.some((absence) => absence.employeeId === employee.id && overlaps(shift.start, shift.end, absence.start, absence.end))) return false;
     const fixedConflict = schedule.some((other) => !mutableIds.has(other.id) && other.employeeId === employee.id && shiftsConflict(shift, other));

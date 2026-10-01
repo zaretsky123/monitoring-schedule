@@ -1,5 +1,6 @@
 import { addDays, fullCalendarDaysBetween, hoursBetween, overlaps, startOfUtcWeek } from "./calendar";
 import type { Absence, Employee, Period, Shift, ValidationIssue } from "./types";
+import { isEmployeeAvailable } from "./employees";
 
 function issue(code: string, message: string, details: Record<string, unknown> = {}): ValidationIssue {
   return { code, message, details };
@@ -126,6 +127,13 @@ function validateWeeklyRest(schedule: Shift[], employees: Employee[], period: Pe
 
 export function validateSchedule({ schedule, employees, period, absences = [] }: { schedule: Shift[]; employees: Employee[]; period: Period; absences?: Absence[] }) {
   const issues = [...validateCoverage(schedule, period), ...validateAbsences(schedule, absences)];
+  const byId = new Map(employees.map((employee) => [employee.id, employee]));
+  for (const shift of schedule) {
+    if (!shift.employeeId || !overlaps(shift.start, shift.end, period.start, period.end)) continue;
+    const employee = byId.get(shift.employeeId);
+    if (!employee) issues.push(issue("UNKNOWN_EMPLOYEE", `Смена ${shift.id}: сотрудник не включён в состав месяца`, { shiftId: shift.id, employeeId: shift.employeeId }));
+    else if (!isEmployeeAvailable(employee, shift)) issues.push(issue("EMPLOYMENT_UNAVAILABLE", `${employee.name}: смена вне периода работы`, { shiftId: shift.id, employeeId: employee.id }));
+  }
   for (const employee of employees) issues.push(...validateEmployeeSequence(employeeShifts(schedule, employee.id), employee.id));
   issues.push(...validateMonthlyPairs(schedule, employees, period));
   issues.push(...validateWeeklyRest(schedule, employees, period));
