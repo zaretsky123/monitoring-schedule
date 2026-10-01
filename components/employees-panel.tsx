@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Archive, Pencil, Plus, Search, Trash2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -15,10 +15,14 @@ type Props = {
   onArchive: (employee: Employee) => void;
   onDelete: (employee: Employee) => string | null;
   onMembership: () => void;
+  membershipReadOnly?: boolean;
   isUsed: (employeeId: string) => boolean;
+  onOpen: (employeeId: string) => void;
+  initialEditId?: string | null;
+  onEditConsumed?: () => void;
 };
 
-export function EmployeesPanel({ employees, memberIds, monthLabel, onSave, onArchive, onDelete, onMembership, isUsed }: Props) {
+export function EmployeesPanel({ employees, memberIds, monthLabel, onSave, onArchive, onDelete, onMembership, membershipReadOnly, isUsed, onOpen, initialEditId, onEditConsumed }: Props) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("current");
   const [editorOpen, setEditorOpen] = useState(false);
@@ -28,6 +32,7 @@ export function EmployeesPanel({ employees, memberIds, monthLabel, onSave, onArc
   const [endDateTime, setEndDateTime] = useState("");
   const [active, setActive] = useState(true);
   const [isTest, setIsTest] = useState(false);
+  const [hourlyRate, setHourlyRate] = useState("");
   const [error, setError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<Employee | null>(null);
@@ -39,9 +44,12 @@ export function EmployeesPanel({ employees, memberIds, monthLabel, onSave, onArc
     setEndDateTime(employee?.endDateTime ?? "");
     setActive(employee?.active ?? true);
     setIsTest(employee?.isTest ?? false);
+    setHourlyRate(employee?.hourlyRate === undefined ? "" : String(employee.hourlyRate));
     setError("");
     setEditorOpen(true);
   }
+
+  useEffect(() => { if (initialEditId) { const employee = employees.find((item) => item.id === initialEditId); if (employee) edit(employee); onEditConsumed?.(); } }, [initialEditId]);
 
   function save(event: React.FormEvent) {
     event.preventDefault();
@@ -50,6 +58,7 @@ export function EmployeesPanel({ employees, memberIds, monthLabel, onSave, onArc
     if (startDate && endDateTime && `${startDate}T00:00` >= endDateTime) { setError("Окончание работы должно быть позже даты начала"); return; }
     const employee: Employee = {
       ...(editing ?? { id: crypto.randomUUID() }), name: name.trim(), active, isTest,
+      hourlyRate: hourlyRate === "" ? undefined : Number(hourlyRate),
       startDate: startDate || undefined, endDateTime: active ? undefined : endDateTime || undefined,
     };
     const message = onSave(employee);
@@ -68,24 +77,25 @@ export function EmployeesPanel({ employees, memberIds, monthLabel, onSave, onArc
   });
 
   return <section className="staff-card" aria-labelledby="staff-title">
-    <div className="staff-heading"><div><h2 id="staff-title">Сотрудники</h2><p>Общий список сотрудников для всех месяцев</p></div><Button onClick={() => edit(null)}><Plus />Добавить сотрудника</Button></div>
-    <div className="staff-month"><Users /><span><strong>{monthLabel}</strong><small>{memberIds.length} из 8 участников · добавление в список не назначает смены</small></span><Button variant="outline" onClick={onMembership}>Состав месяца</Button></div>
+    <div className="staff-heading"><div><h2 id="staff-title">Сотрудники</h2><p>Справочник сотрудников</p></div><Button onClick={() => edit(null)}><Plus />Добавить сотрудника</Button></div>
+    <div className="staff-month"><Users /><span><strong>{monthLabel}</strong><small>{memberIds.length} из 8 участников</small></span><Button variant="outline" onClick={onMembership} disabled={membershipReadOnly}>Состав месяца</Button></div>
     <div className="staff-filters"><label className="staff-search"><Search /><input placeholder="Поиск по ФИО" aria-label="Поиск по ФИО" value={query} onChange={(event) => setQuery(event.target.value)} /></label><select aria-label="Фильтр сотрудников" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="current">Все сотрудники</option><option value="working">Работают</option><option value="dismissed">Уволены</option><option value="test">Тестовые</option><option value="archived">Архив</option></select></div>
     {error && !editorOpen && <p role="alert" className="staff-error">{error}</p>}
     <div className="staff-table-wrap"><table className="staff-table"><thead><tr><th>Сотрудник</th><th>Статус</th><th>Период работы</th><th>Этот месяц</th><th><span className="sr-only">Действия</span></th></tr></thead><tbody>{visible.map((employee) => <tr key={employee.id}>
-      <td><strong>{employee.name}</strong>{employee.isTest && <span className="staff-test-badge">Тестовый</span>}<small className="staff-id" title={employee.id}>ID: {employee.id}</small></td>
+      <td><button type="button" className="staff-name-link" onClick={() => onOpen(employee.id)}>{employee.name}</button>{employee.isTest && <span className="staff-test-badge">Тестовый</span>}<small className="staff-id" title={employee.id}>ID: {employee.id}</small></td>
       <td><span className={`staff-status ${employee.active ? "staff-working" : "staff-dismissed"}`}>{employee.archivedAt ? "В архиве" : employee.active ? "Работает" : "Уволен"}</span></td>
-      <td>{employee.startDate ? new Intl.DateTimeFormat("ru", { timeZone: "UTC" }).format(new Date(`${employee.startDate}T00:00:00Z`)) : "Начало не ограничено"}{employee.endDateTime && <small>До {employee.endDateTime.replace("T", " ")}</small>}</td>
+      <td>{employee.startDate ? new Intl.DateTimeFormat("ru", { timeZone: "UTC" }).format(new Date(`${employee.startDate}T00:00:00Z`)) : "Начало не задано"}{employee.endDateTime && <small>До {employee.endDateTime.replace("T", " ")}</small>}</td>
       <td>{memberIds.includes(employee.id) ? "Участвует" : "Не включён"}</td>
-      <td><div className="staff-actions"><Button size="icon" variant="ghost" aria-label={`Редактировать ${employee.name}`} onClick={() => edit(employee)}><Pencil /></Button>{employee.isTest ? <Button size="icon" variant="ghost" aria-label={`Удалить ${employee.name}`} onClick={() => { setError(""); setDeleteTarget(employee); }}><Trash2 /></Button> : !employee.archivedAt ? <Button size="icon" variant="ghost" aria-label={`Архивировать ${employee.name}`} onClick={() => setArchiveTarget(employee)}><Archive /></Button> : <Button size="sm" variant="outline" onClick={() => { const message = onSave({ ...employee, archivedAt: undefined }); if (message) setError(message); }}>Вернуть</Button>}</div></td>
+      <td><div className="staff-actions"><Button size="icon" variant="ghost" aria-label={`Редактировать ${employee.name}`} onClick={() => edit(employee)}><Pencil /></Button>{employee.isTest && <Button size="icon" variant="ghost" aria-label={`Удалить ${employee.name}`} onClick={() => { setError(""); setDeleteTarget(employee); }}><Trash2 /></Button>}{!employee.archivedAt ? <Button size="icon" variant="ghost" aria-label={`Архивировать ${employee.name}`} onClick={() => setArchiveTarget(employee)}><Archive /></Button> : <Button size="sm" variant="outline" onClick={() => { const message = onSave({ ...employee, archivedAt: undefined }); if (message) setError(message); }}>Вернуть</Button>}</div></td>
     </tr>)}</tbody></table>{!visible.length && <div className="staff-empty"><Users /><strong>{query ? "Сотрудники не найдены" : "В этом списке пока нет сотрудников"}</strong><p>Добавьте сотрудника вручную или измените фильтр.</p></div>}</div>
 
-    <Sheet open={editorOpen} onOpenChange={setEditorOpen}><SheetContent className="employee-sheet sm:max-w-[460px]"><SheetHeader className="sheet-header-custom"><SheetTitle>{editing ? "Карточка сотрудника" : "Добавить сотрудника"}</SheetTitle><SheetDescription>{editing ? "ФИО можно менять: назначения связаны с постоянным ID." : "Сотрудник появится в общем списке. В состав месяца его можно включить отдельно."}</SheetDescription></SheetHeader><form className="staff-form sheet-body" onSubmit={save}>
+    <Sheet open={editorOpen} onOpenChange={setEditorOpen}><SheetContent className="employee-sheet sm:max-w-[460px]"><SheetHeader className="sheet-header-custom"><SheetTitle>{editing ? "Редактировать сотрудника" : "Добавить сотрудника"}</SheetTitle><SheetDescription>{editing ? editing.name : "Новая запись в справочнике"}</SheetDescription></SheetHeader><form className="staff-form sheet-body" onSubmit={save}>
       <label>ФИО<input autoFocus required maxLength={200} value={name} onChange={(event) => setName(event.target.value)} /></label>
-      <label>Доступен с<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /><small>Можно оставить пустым, если дата начала не ограничена.</small></label>
+      <label>Доступен с<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
       <label>Статус<select value={active ? "working" : "dismissed"} onChange={(event) => setActive(event.target.value === "working")}><option value="working">Работает</option><option value="dismissed">Уволен</option></select></label>
-      {!active && <label>Последнее допустимое окончание смены<input type="datetime-local" required value={endDateTime} onChange={(event) => setEndDateTime(event.target.value)} /><small>Смена должна закончиться не позже этого момента. Поздние назначения потребуется перераспределить.</small></label>}
-      <label className="staff-test-toggle"><input type="checkbox" role="switch" checked={isTest} disabled={Boolean(editing && isUsed(editing.id))} onChange={(event) => setIsTest(event.target.checked)} /><span><strong>Тестовый сотрудник</strong><small>{editing && isUsed(editing.id) ? "Тип закреплён после включения в график." : "Те же возможности; графики с ним помечаются как тестовые."}</small></span></label>
+      {!active && <label>Последнее допустимое окончание смены<input type="datetime-local" required value={endDateTime} onChange={(event) => setEndDateTime(event.target.value)} /></label>}
+      <label>Ставка оплаты, ₽/ч<input type="number" min="0" step="0.01" value={hourlyRate} onChange={(event) => setHourlyRate(event.target.value)} /></label>
+      <label className="staff-test-toggle"><input type="checkbox" role="switch" checked={isTest} disabled={Boolean(editing && isUsed(editing.id))} onChange={(event) => setIsTest(event.target.checked)} /><span><strong>Тестовый сотрудник</strong>{editing && isUsed(editing.id) && <small>Тип закреплён</small>}</span></label>
       {editing && <p className="staff-form-id">Постоянный ID: {editing.id}</p>}
       {error && <p role="alert" className="staff-error">{error}</p>}<div className="staff-form-footer"><Button variant="outline" type="button" onClick={() => setEditorOpen(false)}>Отмена</Button><Button type="submit">{editing ? "Сохранить" : "Добавить"}</Button></div>
     </form></SheetContent></Sheet>

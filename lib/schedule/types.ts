@@ -8,6 +8,7 @@ export type Employee = {
   startDate?: string;
   endDateTime?: string;
   archivedAt?: string;
+  hourlyRate?: number;
 };
 
 export type Shift = {
@@ -32,6 +33,11 @@ export type StoredScheduleStatus = "draft" | "published";
 export type ScheduleLifecycleStatus = "draft" | "planned" | "active" | "completed";
 
 export type Absence = {
+  id?: string;
+  createdAt?: string;
+  reason?: string;
+  source?: "period" | "shift";
+  allDay?: boolean;
   employeeId: string;
   start: Date;
   end: Date;

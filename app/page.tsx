@@ -32,8 +32,10 @@ import {
   X,
 } from "lucide-react";
 
+import { ShiftActions } from "@/components/shift-actions";
+import { EmployeeProfile, type EmployeeMonthEntry } from "@/components/employee-profile";
 import { EmployeesPanel } from "@/components/employees-panel";
-import { isEmployeeAvailable, isEmployeeRecord, MAX_MONTH_EMPLOYEES } from "@/lib/schedule/employees";
+import { absencePeriod, compactEmployeeName, shiftAbsences, isEmployeeAvailable, isEmployeeRecord, MAX_MONTH_EMPLOYEES } from "@/lib/schedule/employees";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -140,7 +142,8 @@ const WEEKDAYS_RU = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 const MONTHS_RU = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
 
 type PersistedSchedule = {
-  version: 1 | 2 | 3 | 4 | 5 | 6;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  employeeRates?: Record<string, number>;
   isTest?: boolean;
   historyCount: number;
   status?: StoredScheduleStatus;
@@ -402,7 +405,7 @@ function deserializeShifts(shifts: PersistedSchedule["schedule"] | undefined) {
 }
 
 function restoreMonthRecord(persisted: Partial<PersistedSchedule>, period: Period) {
-  if (![1, 2, 3, 4, 5, 6].includes(persisted.version ?? 0)) return null;
+  if (![1, 2, 3, 4, 5, 6, 7].includes(persisted.version ?? 0)) return null;
   const restored = deserializeShifts(persisted.schedule);
   if (!restored) return null;
   const restoredBaseline = deserializeShifts(persisted.baselineSchedule)
@@ -418,7 +421,7 @@ function restoreMonthRecord(persisted: Partial<PersistedSchedule>, period: Perio
           const absenceStart = new Date(absence.start);
           const absenceEnd = new Date(absence.end);
           return !Number.isNaN(absenceStart.getTime()) && !Number.isNaN(absenceEnd.getTime()) && absenceStart < absenceEnd
-            ? [{ employeeId: absence.employeeId, start: absenceStart, end: absenceEnd }]
+            ? [{ ...absence, start: absenceStart, end: absenceEnd }]
             : [];
         })
       : inferLegacyAbsence(change, beforeSchedule);
@@ -456,6 +459,7 @@ function restoreMonthRecord(persisted: Partial<PersistedSchedule>, period: Perio
     ? 1
     : Number.isInteger(persisted.historyCount) ? persisted.historyCount! : 0;
   return {
+    employeeRates: persisted.employeeRates ?? {},
     isTest: Boolean(persisted.isTest),
     schedule: restored,
     baselineSchedule: restoredBaseline,
@@ -467,13 +471,14 @@ function restoreMonthRecord(persisted: Partial<PersistedSchedule>, period: Perio
     lockedEmployeeIds: Array.isArray(persisted.lockedEmployeeIds) ? persisted.lockedEmployeeIds.filter((id) => typeof id === "string") : [],
     draftAbsences: (persisted.draftAbsences ?? []).flatMap((absence) => {
       const start = new Date(absence.start), end = new Date(absence.end);
-      return start < end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) ? [{ employeeId: absence.employeeId, start, end }] : [];
+      return start < end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) ? [{ ...absence, start, end }] : [];
     }),
   };
 }
 
 function serializeMonthRecord({
   isTest = false,
+  employeeRates = {},
   schedule,
   baselineSchedule,
   changeEvents,
@@ -485,6 +490,7 @@ function serializeMonthRecord({
   draftAbsences = [],
 }: {
   isTest?: boolean;
+  employeeRates?: Record<string, number>;
   schedule: Shift[];
   baselineSchedule: Shift[];
   changeEvents: AppliedChange[];
@@ -496,14 +502,15 @@ function serializeMonthRecord({
   draftAbsences?: Absence[];
 }): PersistedSchedule {
   return {
-    version: 6,
+    version: 7,
+    employeeRates,
     isTest,
     historyCount,
     status,
     draftMode,
     employeeIds,
     lockedEmployeeIds,
-    draftAbsences: draftAbsences.map((absence) => ({ employeeId: absence.employeeId, start: absence.start.toISOString(), end: absence.end.toISOString() })),
+    draftAbsences: draftAbsences.map((absence) => ({ ...absence, start: absence.start.toISOString(), end: absence.end.toISOString() })),
     schedule: serializeShifts(schedule),
     baselineSchedule: serializeShifts(baselineSchedule),
     changeEvents: changeEvents.map((change) => ({
@@ -753,6 +760,16 @@ function CoefficientImpact({ before, after, year }: { before: CoefficientHours |
 
 export default function Home() {
   const [activeSection, setActiveSection] = useState<"График" | "Сотрудники">("График");
+  const [staffProfileId, setStaffProfileId] = useState<string | null>(null);
+  const [employeeEditorId, setEmployeeEditorId] = useState<string | null>(null);
+  const [employeeMonthId, setEmployeeMonthId] = useState<string | null>(null);
+  const [monthEmployeeRates, setMonthEmployeeRates] = useState<Record<string, number>>({});
+  const [absenceMode, setAbsenceMode] = useState<"days" | "time">("days");
+  const [absenceReason, setAbsenceReason] = useState("");
+  const [focusedAbsence, setFocusedAbsence] = useState<Absence | null>(null);
+  const [pendingShiftBlock, setPendingShiftBlock] = useState<{ employeeId: string; shiftId: string } | null>(null);
+  const [pendingAbsenceClose, setPendingAbsenceClose] = useState(false);
+  const [absenceSaved, setAbsenceSaved] = useState(false);
   const [membershipOpen, setMembershipOpen] = useState(false);
   const [membershipIds, setMembershipIds] = useState<string[]>([]);
   const [membershipError, setMembershipError] = useState("");
@@ -842,6 +859,7 @@ export default function Home() {
   const monthLabel = formatMonthLabel(period.year, period.month);
   const monthGenitive = formatMonthGenitive(period.year, period.month);
   const currentLifecycle = lifecycleStatus(scheduleStatus, period);
+  const scheduleReadOnly = currentLifecycle === "completed" || Boolean(employeeMonthId);
   const displaySchedule = previewSchedule ?? generationPreview ?? schedule;
   const contextualSchedule = useMemo(
     () => mergeAdjacentContext(displaySchedule, monthStore.months, selectedMonthKey, period, monthIsTest),
@@ -856,7 +874,7 @@ export default function Home() {
     [schedule],
   );
   const activeAbsences = useMemo(
-    () => mergeAbsences(draftAbsences, ...changeEvents.map((change) => change.absences)),
+    () => mergeAbsences(draftAbsences, ...changeEvents.map((change) => change.absences.map((absence) => ({ ...absence, createdAt: absence.createdAt ?? change.appliedAt.toISOString(), reason: absence.reason ?? (change.reason === "legacy" ? undefined : reasonLabel(change.reason, change.workflow)) })))),
     [changeEvents, draftAbsences],
   );
   const currentValidation = useMemo(
@@ -926,13 +944,14 @@ export default function Home() {
       const nextMonth = parseMonthKey(nextSelectedKey) ?? { year: 2026, month: 10 };
       const nextPeriod = periodForMonth(nextMonth.year, nextMonth.month);
       const restoredRecord = restoreMonthRecord(stored.months![nextSelectedKey], nextPeriod);
-      const restored = restoredRecord ? synchronizeCarryIn(restoredRecord, nextPeriod, carryInAssignment(stored.months!, nextMonth.year, nextMonth.month, restoredRecord.isTest)) : null;
+      const restored = restoredRecord && lifecycleStatus(restoredRecord.status, nextPeriod) !== "completed" ? synchronizeCarryIn(restoredRecord, nextPeriod, carryInAssignment(stored.months!, nextMonth.year, nextMonth.month, restoredRecord.isTest)) : restoredRecord;
       if (restored) {
         setSelectedMonthKey(nextSelectedKey);
         setSchedule(restored.schedule);
         setBaselineSchedule(restored.baselineSchedule);
         setScheduleStatus(restored.status);
-        setMonthIsTest(restored.isTest);
+    setMonthIsTest(restored.isTest);
+    setMonthEmployeeRates(restored.employeeRates);
         setDraftMode(restored.draftMode);
         setEmployeeIds(restored.employeeIds);
         setLockedEmployeeIds(restored.lockedEmployeeIds);
@@ -950,7 +969,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!storageReady) return;
-    const persisted = serializeMonthRecord({ isTest: monthIsTest, schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus, draftMode, employeeIds, lockedEmployeeIds, draftAbsences });
+    const persisted = currentPersistedRecord();
     setMonthStore((current) => {
       const next = { ...current, selectedMonthKey, months: { ...current.months, [selectedMonthKey]: persisted } };
       try {
@@ -960,7 +979,7 @@ export default function Home() {
       }
       return next;
     });
-  }, [monthIsTest, baselineSchedule, changeEvents, historyCount, schedule, scheduleStatus, selectedMonthKey, storageReady, draftMode, employeeIds, lockedEmployeeIds, draftAbsences]);
+  }, [monthEmployeeRates, monthIsTest, baselineSchedule, changeEvents, historyCount, schedule, scheduleStatus, selectedMonthKey, storageReady, draftMode, employeeIds, lockedEmployeeIds, draftAbsences]);
 
   useEffect(() => {
     if (!storageReady || !Object.hasOwn(monthStore.months, monthStore.selectedMonthKey)) return;
@@ -1052,7 +1071,7 @@ export default function Home() {
     const month = parseMonthKey(nextKey)!;
     const nextPeriod = periodForMonth(month.year, month.month);
     const restored = restoreMonthRecord(remote.payload.months[nextKey], nextPeriod)!;
-    const synchronized = synchronizeCarryIn(restored, nextPeriod, carryInAssignment(remote.payload.months, month.year, month.month, restored.isTest));
+    const synchronized = lifecycleStatus(restored.status, nextPeriod) === "completed" ? restored : synchronizeCarryIn(restored, nextPeriod, carryInAssignment(remote.payload.months, month.year, month.month, restored.isTest));
     try {
       window.localStorage.setItem(`${MONTHS_STORAGE_KEY}:before-cloud-import`, JSON.stringify(monthStore));
     } catch { /* Резервная копия останется в текущей вкладке. */ }
@@ -1062,6 +1081,7 @@ export default function Home() {
     setBaselineSchedule(synchronized.baselineSchedule);
     setScheduleStatus(synchronized.status);
     setMonthIsTest(synchronized.isTest);
+    setMonthEmployeeRates(synchronized.employeeRates);
     setDraftMode(synchronized.draftMode);
     setEmployeeIds(synchronized.employeeIds);
     setLockedEmployeeIds(synchronized.lockedEmployeeIds);
@@ -1160,6 +1180,7 @@ export default function Home() {
   }, [cancelDraftConfirmOpen, newMonthConfirmOpen, resetConfirmOpen, rollbackConfirmId]);
 
   function openWorkflow(shift: ShiftSelection, nextWorkflow: Exclude<Workflow, null>) {
+    if (scheduleReadOnly) return;
     setSelectedShift(shift);
     setWorkflow(nextWorkflow);
     setScope("shift");
@@ -1212,6 +1233,7 @@ export default function Home() {
   }, [options.length]);
 
   function openEmployeeAbsence(person: Person) {
+    if (scheduleReadOnly) return;
     setSelectedEmployee(person);
     setSelectedShift(null);
     setEmployeeOpen(false);
@@ -1260,6 +1282,47 @@ export default function Home() {
     return () => lifecycle.abort();
   }, [dayCount, period, schedule, employees]);
 
+  function openEmployeeSheet(person: Person) {
+    setSelectedEmployee(person); setAbsenceStart(""); setAbsenceEnd(""); setAbsenceReason("");
+    setAbsenceError(""); setAbsenceSaved(false); setEmployeeOpen(true);
+  }
+
+  function closeEmployeeSheet(open: boolean) {
+    if (!open && (absenceStart || absenceEnd || absenceReason)) { setPendingAbsenceClose(true); return; }
+    setEmployeeOpen(open);
+  }
+
+  function markShiftUnavailable(employeeId: string, shiftId: string, confirmed = false) {
+    if (scheduleReadOnly) return;
+    const target = schedule.find((shift) => shift.id === shiftId);
+    if (!target || shiftAbsences(employeeId, target, activeAbsences).length) return;
+    if (target.employeeId === employeeId && scheduleStatus !== "draft") {
+      openWorkflow({ person: employeeId, kind: target.type === "D" ? "day" : "night", startDay: Math.floor((target.start.getTime() - period.start.getTime()) / 86400000) + 1 }, "remove");
+      return;
+    }
+    if (target.employeeId === employeeId && !confirmed) { setPendingShiftBlock({ employeeId, shiftId }); return; }
+    if (target.employeeId === employeeId) removeDraftAssignment(shiftId);
+    setDraftAbsences((current) => mergeAbsences(current, [{ id: crypto.randomUUID(), employeeId, start: target.start, end: target.end, source: "shift", createdAt: new Date().toISOString() }]));
+    generationAbortRef.current?.abort(); setGenerationPreview(null); setGenerationOptions([]);
+    setPendingShiftBlock(null);
+  }
+
+  function removeAbsence(absence: Absence) {
+    if (scheduleReadOnly) return;
+    setDraftAbsences((current) => current.filter((item) => absence.id ? item.id !== absence.id : !(item.employeeId === absence.employeeId && item.start.getTime() === absence.start.getTime() && item.end.getTime() === absence.end.getTime())));
+    setFocusedAbsence(null); generationAbortRef.current?.abort(); setGenerationPreview(null); setGenerationOptions([]);
+  }
+
+  function absenceLabel(absence: Absence) {
+    if (absence.allDay) return `${new Intl.DateTimeFormat("ru", { timeZone: "UTC" }).format(absence.start)} — ${new Intl.DateTimeFormat("ru", { timeZone: "UTC" }).format(addDays(absence.end, -1))} включительно`;
+    return `${shortDateTime(absence.start)} — ${shortDateTime(absence.end)}`;
+  }
+
+  function renderMonthAbsences(person: Person) {
+    const absences = activeAbsences.filter((absence) => absence.employeeId === person && absence.start < period.end && absence.end > period.start);
+    return <section className="employee-month-absences"><h3>Периоды недоступности · {monthLabel}</h3>{!absences.length ? <p>Недоступность не указана</p> : absences.map((absence) => <div className={cn("employee-absence-record", focusedAbsence === absence && "employee-absence-selected")} key={absence.id ?? `${absence.start.toISOString()}-${absence.end.toISOString()}`}><button onClick={() => { setFocusedAbsence(focusedAbsence === absence ? null : absence); scheduleScrollRef.current?.scrollTo({ left: Math.max(0, (Math.max(1, absence.start.getUTCDate()) - 2) * (DAY_WIDTH + 1)), behavior: "smooth" }); }}><strong>{absenceLabel(absence)}</strong>{absence.reason && <span>{absence.reason}</span>}{absence.createdAt && <small>Добавлено {new Intl.DateTimeFormat("ru", { timeZone: "Europe/Moscow", dateStyle: "short", timeStyle: "short" }).format(new Date(absence.createdAt))}</small>}</button></div>)}</section>;
+  }
+
   function renderShiftSegment(person: Person, kind: ShiftKind, startDay: number, segment: "left" | "center" | "right") {
     const shift = { person, kind, startDay } satisfies ShiftSelection;
     const longLabel = shiftLabel(shift, period);
@@ -1267,54 +1330,46 @@ export default function Home() {
     const changed = Boolean(scheduleShift && scheduleShift.employeeId !== scheduleShift.plannedEmployeeId);
     const highlightedByChange = Boolean(scheduleShift && selectedChangeId !== null && changeEvents.find((change) => change.id === selectedChangeId)?.changes.some((change) => change.shiftId === scheduleShift.id));
     const focusedPreviewChange = Boolean(scheduleShift && focusedPreviewShiftId === scheduleShift.id);
-    return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button type="button" className={cn("shift-segment", kind === "day" ? "shift-day" : "shift-night", segment === "left" && "segment-left", segment === "right" && "segment-right", changed && "shift-changed", highlightedByChange && "shift-history-highlighted", focusedPreviewChange && "shift-preview-focused")} aria-label={`${employeeNameById[person]}. ${kind === "day" ? "Дневная" : "Ночная"} смена: ${longLabel}`} title={longLabel}>
-            <span>{kind === "day" ? "Д" : "Н"}</span>
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-60 rounded-xl p-2 shadow-xl">
-          <DropdownMenuLabel className="px-2 pb-2 pt-1">
-            <span className="block text-[13px] text-slate-500">{kind === "day" ? "Дневная смена" : "Ночная смена"}</span>
-            <span className="mt-0.5 block text-sm font-semibold text-slate-900">{employeeNameById[person]}</span>
-          </DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          {scheduleStatus === "draft" ? (
-            <DropdownMenuItem className="rounded-lg py-2.5" variant="destructive" onSelect={() => scheduleShift && removeDraftAssignment(scheduleShift.id)}><UserX />Снять назначение</DropdownMenuItem>
-          ) : <>
-            <DropdownMenuItem className="rounded-lg py-2.5" variant="destructive" onSelect={() => openWorkflow(shift, "remove")}><UserX />Убрать</DropdownMenuItem>
-            <DropdownMenuItem className="rounded-lg py-2.5" onSelect={() => openWorkflow(shift, "replace")}><UserRoundCog />Заменить</DropdownMenuItem>
-          </>}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    );
+    const highlightedAbsence = Boolean(scheduleShift && focusedAbsence?.employeeId === person && scheduleShift.start < focusedAbsence.end && scheduleShift.end > focusedAbsence.start);
+    const control = <button type="button" className={cn("shift-segment", kind === "day" ? "shift-day" : "shift-night", segment === "left" && "segment-left", segment === "right" && "segment-right", changed && "shift-changed", highlightedByChange && "shift-history-highlighted", focusedPreviewChange && "shift-preview-focused", highlightedAbsence && "absence-highlighted")} aria-label={`${employeeNameById[person]}. ${kind === "day" ? "Дневная" : "Ночная"} смена: ${longLabel}`} title={longLabel} onClick={scheduleReadOnly ? () => openEmployeeSheet(person) : undefined}><span>{kind === "day" ? "Д" : "Н"}</span></button>;
+    if (scheduleReadOnly) return control;
+    const actions = scheduleStatus === "draft" ? [
+      { label: "Снять назначение", destructive: true, onSelect: () => scheduleShift && removeDraftAssignment(scheduleShift.id) },
+      { label: "Снять и отметить недоступность", onSelect: () => scheduleShift && markShiftUnavailable(person, scheduleShift.id) },
+    ] : [
+      { label: "Убрать", destructive: true, onSelect: () => openWorkflow(shift, "remove") },
+      { label: "Заменить", onSelect: () => openWorkflow(shift, "replace") },
+      { label: "Убрать и отметить недоступность", onSelect: () => scheduleShift && markShiftUnavailable(person, scheduleShift.id) },
+    ];
+    return <ShiftActions actions={actions}><DropdownMenu><DropdownMenuTrigger asChild>{control}</DropdownMenuTrigger><DropdownMenuContent align="start" className="w-72 rounded-xl p-2 shadow-xl"><DropdownMenuLabel>{kind === "day" ? "Дневная" : "Ночная"} смена</DropdownMenuLabel><DropdownMenuSeparator />{actions.map((action) => <DropdownMenuItem key={action.label} variant={action.destructive ? "destructive" : "default"} onSelect={action.onSelect}>{action.label}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></ShiftActions>;
   }
 
   function renderDraftSlot(person: Person, kind: ShiftKind, startDay: number, segment: "left" | "center" | "right") {
-    if (scheduleStatus !== "draft") return null;
-    if (draftMode === "seed" && startDay > GENERATION_SEED_DAYS && !draftGenerationStarted) return null;
-    const target = schedule.find((shift) => shift.id === shiftIdFor(period, startDay, kind));
-    if (!target || target.employeeId) return null;
-    const employeeId = person;
-    const unavailable = !isEmployeeAvailable(employees.find((employee) => employee.id === employeeId)!, target) || draftAbsences.some((absence) => absence.employeeId === employeeId && target.start < absence.end && target.end > absence.start);
-    return (
-      <button
-        type="button"
-        className={cn("draft-shift-slot", kind === "day" ? "draft-day-slot" : "draft-night-slot", `draft-${segment}-slot`, unavailable && "draft-unavailable-slot")}
-        onClick={() => assignDraftShift(target.id, employeeId)}
-        disabled={unavailable}
-        aria-label={unavailable ? `${employeeNameById[person]} недоступен в эту смену` : `Назначить ${employeeNameById[person]} на ${kind === "day" ? "дневную" : "ночную"} смену`}
-        title={unavailable ? "Сотрудник недоступен" : `Назначить ${employeeNameById[person]}`}
-      ><Plus /></button>
-    );
+    const target = displaySchedule.find((shift) => shift.id === shiftIdFor(period, startDay, kind));
+    if (!target) return null;
+    const employee = employees.find((item) => item.id === person);
+    const blocking = shiftAbsences(person, target, activeAbsences);
+    const unavailable = !employee || (!scheduleReadOnly && !isEmployeeAvailable(employee, target)) || blocking.length > 0;
+    const highlighted = Boolean(focusedAbsence?.employeeId === person && target.start < focusedAbsence.end && target.end > focusedAbsence.start);
+    const editable = !scheduleReadOnly && scheduleStatus === "draft" && !(draftMode === "seed" && startDay > GENERATION_SEED_DAYS && !draftGenerationStarted);
+    const assignable = editable && !target.employeeId && !unavailable;
+    const actions = unavailable ? [
+      ...(blocking.some((absence) => absence.source === "shift" && draftAbsences.includes(absence)) ? [{ label: "Снять недоступность смены", onSelect: () => blocking.filter((absence) => absence.source === "shift" && draftAbsences.includes(absence)).forEach(removeAbsence) }] : []),
+      ...(blocking.some((absence) => absence.source !== "shift") ? [{ label: "Открыть период недоступности", onSelect: () => openEmployeeSheet(person) }] : []),
+    ] : [
+      ...(assignable ? [{ label: "Назначить смену", onSelect: () => assignDraftShift(target.id, person) }] : []),
+      { label: "Отметить недоступность", onSelect: () => markShiftUnavailable(person, target.id) },
+    ];
+    if (!unavailable && !editable && scheduleReadOnly) return null;
+    const control = <button type="button" className={cn(assignable ? "draft-shift-slot" : "empty-shift-slot", `draft-${segment}-slot`, unavailable && "unavailable-shift-slot", highlighted && "absence-highlighted")} onClick={assignable ? () => assignDraftShift(target.id, person) : unavailable ? () => openEmployeeSheet(person) : undefined} aria-disabled={unavailable || !assignable} aria-label={unavailable ? `${employeeNameById[person]} недоступен в эту смену` : assignable ? `Назначить ${employeeNameById[person]} на ${kind === "day" ? "дневную" : "ночную"} смену` : `${employeeNameById[person]}. Свободно: ${shiftLabel({person,kind,startDay}, period)}`} title={unavailable ? "Недоступно" : undefined}>{unavailable ? <X /> : assignable ? <Plus /> : null}</button>;
+    return <ShiftActions actions={actions} disabled={scheduleReadOnly}>{control}</ShiftActions>;
   }
 
   async function calculateOptions() {
-    if (calculating) return;
+    if (scheduleReadOnly || calculating) return;
     const employeeId = selectedShift ? selectedShift.person : selectedEmployee ? selectedEmployee : "";
     let target = selectedShift ? schedule.find((shift) => shift.id === shiftIdFor(period, selectedShift.startDay, selectedShift.kind)) : undefined;
-    let absence: Absence | null = target ? { employeeId: target.employeeId, start: target.start, end: target.end } : null;
+    let absence: Absence | null = target ? { id: crypto.randomUUID(), employeeId: target.employeeId, start: target.start, end: target.end, source: "shift", createdAt: new Date().toISOString() } : null;
 
     if (!selectedShift && workflow === "remove") {
       const start = new Date(`${customStart}:00Z`);
@@ -1323,7 +1378,7 @@ export default function Home() {
         setCalculationError("Окончание периода должно быть позже начала.");
         return;
       }
-      absence = { employeeId, start, end };
+      absence = { id: crypto.randomUUID(), employeeId, start, end, source: "period", createdAt: new Date().toISOString() };
       target = schedule.find((shift) => shift.employeeId === employeeId && shift.start < end && shift.end > start);
     }
 
@@ -1349,6 +1404,7 @@ export default function Home() {
       absence = { employeeId: target.employeeId, start, end };
     }
 
+    absence = { ...absence, id: absence.id ?? crypto.randomUUID(), source: selectedShift && scope === "shift" ? "shift" : "period", createdAt: absence.createdAt ?? new Date().toISOString() };
     const requiredAssignments = workflow === "replace" && replacement
       ? { [target.id]: replacement }
       : {};
@@ -1410,13 +1466,16 @@ export default function Home() {
   }
 
   function applySelectedOption() {
+    if (scheduleReadOnly) return;
     const option = options.find((item) => item.key === selectedOptionKey);
     if (!option || !pendingChange) return;
     const nextId = historyCount + 1;
+    const appliedAt = new Date();
     const appliedChange: AppliedChange = {
       ...pendingChange,
       id: nextId,
-      appliedAt: new Date(),
+      appliedAt,
+      absences: pendingChange.absences.map((absence) => ({ ...absence, createdAt: appliedAt.toISOString(), reason: absence.reason ?? reasonLabel(pendingChange.reason, pendingChange.workflow) })),
       optionNumber: options.findIndex((item) => item.key === option.key) + 1,
       changes: option.metrics.changes,
       beforeSchedule: schedule.map((shift) => ({ ...shift })),
@@ -1429,6 +1488,7 @@ export default function Home() {
   }
 
   function rollbackChange(changeId: number) {
+    if (scheduleReadOnly) return;
     const index = changeEvents.findIndex((change) => change.id === changeId);
     if (index < 0) return;
     const targetChange = changeEvents[index];
@@ -1445,6 +1505,8 @@ export default function Home() {
   }
 
   function resetTransientView() {
+    setFocusedAbsence(null);
+    setAbsenceStart(""); setAbsenceEnd(""); setAbsenceReason(""); setAbsenceError(""); setAbsenceSaved(false);
     calculationAbortRef.current?.abort();
     generationAbortRef.current?.abort();
     setPreviewSchedule(null);
@@ -1476,7 +1538,8 @@ export default function Home() {
   }
 
   function currentPersistedRecord() {
-    return serializeMonthRecord({ isTest: monthIsTest, schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus, draftMode, employeeIds, lockedEmployeeIds, draftAbsences });
+    if (currentLifecycle === "completed" && monthStore.months[selectedMonthKey]) return monthStore.months[selectedMonthKey];
+    return serializeMonthRecord({ employeeRates: monthEmployeeRates, isTest: monthIsTest, schedule, baselineSchedule, changeEvents, historyCount, status: scheduleStatus, draftMode, employeeIds, lockedEmployeeIds, draftAbsences });
   }
 
   function isEmployeeUsed(employeeId: string) {
@@ -1508,6 +1571,7 @@ export default function Home() {
     const hasReference = (record: PersistedSchedule) => record.employeeIds?.includes(employee.id)
       || [...record.schedule, ...(record.baselineSchedule ?? []), ...(record.changeEvents ?? []).flatMap((change) => change.beforeSchedule)]
         .some((shift) => shift.employeeId === employee.id || shift.plannedEmployeeId === employee.id);
+    if (Object.entries(records).some(([key, record]) => { const month = parseMonthKey(key)!; return hasReference(record) && lifecycleStatus(record.status ?? "published", periodForMonth(month.year, month.month)) === "completed"; })) return "Сотрудник используется в завершённом месяце. Перенесите его в архив.";
     if (Object.values(records).some((record) => !record.isTest && hasReference(record))) return "Удаление остановлено: сотрудник используется в рабочем графике";
     const clear = (shifts: PersistedSchedule["schedule"]) => shifts.map((shift) => ({ ...shift,
       employeeId: shift.employeeId === employee.id ? "" : shift.employeeId,
@@ -1518,6 +1582,7 @@ export default function Home() {
       ...record,
       employeeIds: record.employeeIds?.filter((id) => id !== employee.id),
       lockedEmployeeIds: record.lockedEmployeeIds?.filter((id) => id !== employee.id),
+      employeeRates: Object.fromEntries(Object.entries(record.employeeRates ?? {}).filter(([id]) => id !== employee.id)),
       draftAbsences: record.draftAbsences?.filter((absence) => absence.employeeId !== employee.id),
       schedule: clear(record.schedule), baselineSchedule: clear(record.baselineSchedule ?? []),
       changeEvents: (record.changeEvents ?? []).filter((change) => change.employeeId !== employee.id).map((change) => ({
@@ -1532,16 +1597,18 @@ export default function Home() {
     setSchedule(restored.schedule); setBaselineSchedule(restored.baselineSchedule);
     setEmployeeIds(restored.employeeIds); setLockedEmployeeIds(restored.lockedEmployeeIds);
     setDraftAbsences(restored.draftAbsences); setChangeEvents(restored.changeEvents);
-    setSelectedEmployee(null); setFocusPerson(null);
+    setSelectedEmployee(null); setFocusPerson(null); setStaffProfileId(null);
     saveMonthStore(next);
     return null;
   }
 
   function openMembership() {
+    if (scheduleReadOnly) return;
     setMembershipIds([...employeeIds]); setMembershipError(""); setMembershipOpen(true);
   }
 
   function saveMembership() {
+    if (scheduleReadOnly) return;
     if (!membershipIds.length || membershipIds.length > MAX_MONTH_EMPLOYEES) { setMembershipError("Выберите от 1 до 8 сотрудников"); return; }
     const removed = employeeIds.filter((id) => !membershipIds.includes(id));
     if (schedule.some((shift) => removed.includes(shift.employeeId) || removed.includes(shift.plannedEmployeeId))
@@ -1557,7 +1624,7 @@ export default function Home() {
 
   function openStoredMonth(targetKey: string, source = monthStore) {
     const targetMonth = parseMonthKey(targetKey);
-    const targetRecord = source.months[targetKey];
+    const targetRecord = targetKey === selectedMonthKey ? currentPersistedRecord() : source.months[targetKey];
     if (!targetMonth || !targetRecord) return;
     const nextStore = {
       ...source,
@@ -1566,14 +1633,15 @@ export default function Home() {
     };
     const targetPeriod = periodForMonth(targetMonth.year, targetMonth.month);
     const restoredRecord = restoreMonthRecord(targetRecord, targetPeriod);
-    const restored = restoredRecord ? synchronizeCarryIn(restoredRecord, targetPeriod, carryInAssignment(nextStore.months, targetMonth.year, targetMonth.month, restoredRecord.isTest)) : null;
+    const restored = restoredRecord && lifecycleStatus(restoredRecord.status, targetPeriod) !== "completed" ? synchronizeCarryIn(restoredRecord, targetPeriod, carryInAssignment(nextStore.months, targetMonth.year, targetMonth.month, restoredRecord.isTest)) : restoredRecord;
     if (!restored) return;
     saveMonthStore(nextStore);
     setSelectedMonthKey(targetKey);
     setSchedule(restored.schedule);
     setBaselineSchedule(restored.baselineSchedule);
     setScheduleStatus(restored.status);
-        setMonthIsTest(restored.isTest);
+    setMonthIsTest(restored.isTest);
+    setMonthEmployeeRates(restored.employeeRates);
     setDraftMode(restored.draftMode);
     setEmployeeIds(restored.employeeIds);
     setLockedEmployeeIds(restored.lockedEmployeeIds);
@@ -1630,6 +1698,7 @@ export default function Home() {
     setBaselineSchedule([]);
     setScheduleStatus("draft");
     setMonthIsTest(isTest);
+    setMonthEmployeeRates({});
     setDraftMode(newDraftMode);
     setEmployeeIds(newEmployeeIds);
     setLockedEmployeeIds([]);
@@ -1641,13 +1710,14 @@ export default function Home() {
   }
 
   function assignDraftShift(shiftId: string, employeeId: string) {
-    if (scheduleStatus !== "draft") return;
+    if (scheduleReadOnly) return;
+    if (scheduleStatus !== "draft" || scheduleReadOnly) return;
     const target = schedule.find((shift) => shift.id === shiftId);
     const employee = employees.find((item) => item.id === employeeId);
-    if (!employee || !employeeIds.includes(employeeId) || target && !isEmployeeAvailable(employee, target)) {
+    if (!target || !employee || !employeeIds.includes(employeeId) || !isEmployeeAvailable(employee, target)) {
       setDraftPublishError("Эта смена вне периода работы сотрудника"); return;
     }
-    if (target && draftAbsences.some((absence) => absence.employeeId === employeeId && target.start < absence.end && target.end > absence.start)) {
+    if (shiftAbsences(employeeId, target, activeAbsences).length) {
       setDraftPublishError("Этот сотрудник недоступен в выбранную смену.");
       return;
     }
@@ -1658,7 +1728,8 @@ export default function Home() {
   }
 
   function removeDraftAssignment(shiftId: string) {
-    if (scheduleStatus !== "draft") return;
+    if (scheduleReadOnly) return;
+    if (scheduleStatus !== "draft" || scheduleReadOnly) return;
     setSchedule((current) => current.map((shift) => shift.id === shiftId
       ? { ...shift, employeeId: "", plannedEmployeeId: "" }
       : shift));
@@ -1666,23 +1737,23 @@ export default function Home() {
   }
 
   function addDraftAbsence(person: Person) {
-    const start = new Date(`${absenceStart}:00Z`);
-    const end = new Date(`${absenceEnd}:00Z`);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) {
-      setAbsenceError("Укажите начало и окончание периода: окончание должно быть позже начала.");
-      return;
+    if (scheduleStatus !== "draft" || scheduleReadOnly) return false;
+    const dates = absencePeriod(absenceStart, absenceEnd, absenceMode);
+    if (!dates) { setAbsenceError("Укажите корректное начало и окончание периода"); return false; }
+    const { start, end } = dates;
+    if (schedule.some((shift) => shift.employeeId === person && shift.start < end && shift.end > start)) {
+      setAbsenceError("На этот период уже назначены смены. Сначала снимите назначения."); return false;
     }
-    const employeeId = person;
-    if (schedule.some((shift) => shift.employeeId === employeeId && shift.start < end && shift.end > start)) {
-      setAbsenceError("На этот период уже назначена смена. Сначала снимите её в графике.");
-      return;
-    }
-    setDraftAbsences((current) => mergeAbsences(current, [{ employeeId, start, end }]));
-    setAbsenceError("");
-    setDraftPublishError("");
+    setDraftAbsences((current) => mergeAbsences(current, [{ id: crypto.randomUUID(), employeeId: person, start, end,
+      createdAt: new Date().toISOString(), reason: absenceReason.trim() || undefined, source: "period", allDay: absenceMode === "days" }]));
+    generationAbortRef.current?.abort(); setGenerationPreview(null); setGenerationOptions([]);
+    setAbsenceError(""); setDraftPublishError(""); setAbsenceSaved(true);
+    setAbsenceStart(""); setAbsenceEnd(""); setAbsenceReason("");
+    return true;
   }
 
   function openGenerator() {
+    if (scheduleReadOnly) return;
     setGenerationMode(draftMode === "manual" ? "optimal" : "pattern");
     setGenerationError("");
     setGenerationOptions([]);
@@ -1703,6 +1774,7 @@ export default function Home() {
   }
 
   async function calculateGeneratedSchedule() {
+    if (scheduleReadOnly) return;
     if (generating) return;
     setGenerating(true);
     setGenerationError("");
@@ -1748,6 +1820,7 @@ export default function Home() {
   }
 
   function applyGeneratedSchedule() {
+    if (scheduleReadOnly) return;
     const option = generationOptions.find((item) => item.key === selectedGenerationKey);
     if (!option) return;
     const currentShiftIds = new Set(schedule.map((shift) => shift.id));
@@ -1763,6 +1836,7 @@ export default function Home() {
   }
 
   function publishDraft() {
+    if (scheduleReadOnly) return;
     const unassigned = schedule.filter((shift) => !shift.employeeId);
     if (unassigned.length) {
       setDraftPublishError(`Осталось назначить ${unassigned.length} ${unassigned.length === 1 ? "смену" : "смен"}.`);
@@ -1773,6 +1847,7 @@ export default function Home() {
       setDraftPublishError(`Нельзя закрепить график: найдено ${validation.issues.length} нарушений обязательных правил.`);
       return;
     }
+    setMonthEmployeeRates(Object.fromEntries(activeEmployees.filter((employee) => employee.hourlyRate !== undefined).map((employee) => [employee.id, employee.hourlyRate!])));
     const published = schedule.map((shift) => ({ ...shift, plannedEmployeeId: shift.employeeId }));
     setSchedule(published);
     setBaselineSchedule(published.map((shift) => ({ ...shift })));
@@ -1781,6 +1856,7 @@ export default function Home() {
   }
 
   function cancelDraft() {
+    if (scheduleReadOnly) return;
     if (baselineSchedule.length) {
       setSchedule(baselineSchedule.map((shift) => ({ ...shift })));
       setScheduleStatus("published");
@@ -1808,7 +1884,8 @@ export default function Home() {
         setSchedule(restored.schedule);
         setBaselineSchedule(restored.baselineSchedule);
         setScheduleStatus(restored.status);
-        setMonthIsTest(restored.isTest);
+    setMonthIsTest(restored.isTest);
+    setMonthEmployeeRates(restored.employeeRates);
         setDraftMode(restored.draftMode);
         setEmployeeIds(restored.employeeIds);
         setLockedEmployeeIds(restored.lockedEmployeeIds);
@@ -1822,6 +1899,7 @@ export default function Home() {
   }
 
   function resetToOriginalSchedule() {
+    if (scheduleReadOnly) return;
     setSchedule(baselineSchedule.map((shift) => ({ ...shift })));
     setPreviewSchedule(null);
     setOptions([]);
@@ -1992,6 +2070,49 @@ export default function Home() {
     }
   }
 
+  const profileRecords = { ...monthStore.months, [selectedMonthKey]: currentPersistedRecord() };
+  const calendarParts = new Intl.DateTimeFormat("en", { timeZone: "Europe/Moscow", year: "numeric", month: "2-digit" }).formatToParts(new Date());
+  const calendarYear = Number(calendarParts.find((part) => part.type === "year")!.value);
+  const calendarMonth = Number(calendarParts.find((part) => part.type === "month")!.value);
+  const calendarKey = monthKey(calendarYear, calendarMonth);
+  const staffProfile = employees.find((employee) => employee.id === staffProfileId);
+  const profileCurrent = profileRecords[calendarKey] ? restoreMonthRecord(profileRecords[calendarKey], periodForMonth(calendarYear, calendarMonth)) : null;
+
+  function employeeMonths(person: string): EmployeeMonthEntry[] {
+    return Object.entries(profileRecords).flatMap(([key, record]) => {
+      const month = parseMonthKey(key)!;
+      const monthPeriod = periodForMonth(month.year, month.month);
+      const restored = restoreMonthRecord(record, monthPeriod);
+      if (!restored || !restored.employeeIds.includes(person)) return [];
+      const stats = personStats(person, restored.schedule, monthPeriod);
+      return [{ key, label: formatMonthLabel(month.year, month.month), year: month.year, status: lifecycleLabel(lifecycleStatus(restored.status, monthPeriod)), isTest: restored.isTest, hours: stats.hours, total: stats.total }];
+    }).sort((a, b) => b.key.localeCompare(a.key));
+  }
+
+  function renderEmployeeMonthStats(person: string, shifts: Shift[], monthPeriod: Period, hourlyRate: number | undefined, label: string) {
+    const stats = personStats(person, shifts, monthPeriod);
+    const key = monthKey(monthPeriod.year, monthPeriod.month);
+    const record = profileRecords[key];
+    const contextual = mergeAdjacentContext(shifts, profileRecords, key, monthPeriod, Boolean(record?.isTest));
+    const coefficients = coefficientHoursForEmployee(contextual, person, monthPeriod);
+    return <section className="employee-month-stats" aria-label={`Статистика сотрудника за ${label}`}><div className="employee-stats"><div><strong>{stats.total}</strong><span>смен</span></div><div><strong>{stats.hours}</strong><span>часов</span></div><div><strong>{stats.dayCount}</strong><span>дневных</span></div><div><strong>{stats.nightCount}</strong><span>ночных</span></div></div><div className="employee-month-details"><div className="detail-line"><span>Рабочие часы по плану</span><strong>{stats.planned} ч</strong></div><div className="detail-line"><span>Отклонение от плана</span><strong>{stats.delta > 0 ? "+" : ""}{stats.delta} ч</strong></div><div className="detail-line"><span>Часы полных выходных</span><strong>{stats.fullOffHours} ч · {stats.fullOffDays} дней</strong></div><div className="detail-line"><span>Свободные от смен часы</span><strong>{stats.restHours} ч</strong></div><div className="detail-line"><span>Пар полных выходных</span><strong>{stats.offPairs}</strong></div><div className="detail-line"><span>Ставка этого месяца</span><strong>{hourlyRate === undefined ? "Не задана" : `${hourlyRate.toLocaleString("ru")} ₽/ч`}</strong></div></div>{coefficients ? <details className="coefficient-summary"><summary><span>Часы с коэффициентами</span><strong>{formatCoefficient(coefficients.weightedHours)}</strong><span className="coefficient-more">Подробнее <ChevronRight /></span></summary><CoefficientBreakdown hours={coefficients} /></details> : <p className="coefficient-unavailable">Календарь праздников за {monthPeriod.year} год ещё не загружен</p>}</section>;
+  }
+
+  function openEmployeeMonth(person: string, key: string) {
+    openStoredMonth(key); setEmployeeMonthId(person); setFocusPerson(person); setActiveSection("График");
+  }
+
+  function navigateMonth(key: string) {
+    const focus = focusPerson;
+    openStoredMonth(key);
+    if (employeeMonthId) setFocusPerson(focus);
+  }
+
+  function backToEmployeeProfile() {
+    const person = employeeMonthId;
+    resetTransientView(); setStaffProfileId(person); setEmployeeMonthId(null); setActiveSection("Сотрудники");
+  }
+
   const gridStyle = { gridTemplateColumns: `${NAME_WIDTH}px repeat(${dayCount}, ${DAY_WIDTH}px)` };
   const monthShifts = schedule.filter((shift) => shift.start >= period.start && shift.start < period.end);
   const assignedMonthShifts = monthShifts.filter((shift) => Boolean(shift.employeeId)).length;
@@ -2009,10 +2130,10 @@ export default function Home() {
   const selectedChange = selectedChangeId === null ? null : changeEvents.find((change) => change.id === selectedChangeId) ?? null;
   const rollbackTarget = rollbackConfirmId === null ? null : changeEvents.find((change) => change.id === rollbackConfirmId) ?? null;
   const rollbackLaterChanges = rollbackTarget ? changeEvents.filter((change) => change.id > rollbackTarget.id) : [];
-  const storedMonthKeys = Object.keys(monthStore.months).sort();
-  const selectedMonthIndex = storedMonthKeys.indexOf(selectedMonthKey);
-  const previousMonthKey = selectedMonthIndex > 0 ? storedMonthKeys[selectedMonthIndex - 1] : null;
-  const nextMonthKey = selectedMonthIndex >= 0 && selectedMonthIndex < storedMonthKeys.length - 1 ? storedMonthKeys[selectedMonthIndex + 1] : null;
+  const navigationMonthKeys = employeeMonthId ? employeeMonths(employeeMonthId).map((month) => month.key).sort() : Object.keys(profileRecords).sort();
+  const selectedMonthIndex = navigationMonthKeys.indexOf(selectedMonthKey);
+  const navigationPreviousKey = selectedMonthIndex > 0 ? navigationMonthKeys[selectedMonthIndex - 1] : null;
+  const navigationNextKey = selectedMonthIndex >= 0 && selectedMonthIndex < navigationMonthKeys.length - 1 ? navigationMonthKeys[selectedMonthIndex + 1] : null;
   const requestedNewMonthKey = monthKey(Number(newMonthYear), Number(newMonthNumber));
   const requestedMonthExists = Boolean(monthStore.months[requestedNewMonthKey]);
   const requestedCarryIn = carryInAssignment(monthStore.months, Number(newMonthYear), Number(newMonthNumber), employees.some((employee) => newEmployeeIds.includes(employee.id) && employee.isTest));
@@ -2058,7 +2179,7 @@ export default function Home() {
             {sidebarExpanded && <div className="min-w-0"><div className="brand-title">Мониторинг</div><div className="brand-caption">Управление сменами</div></div>}
           </div>
           <nav className="sidebar-nav" aria-label="Основное меню">
-            {NAV_ITEMS.map((item) => <NavButton key={item.label} {...item} active={activeSection === item.label} onClick={item.label === "График" || item.label === "Сотрудники" ? () => { resetTransientView(); setActiveSection(item.label as "График" | "Сотрудники"); } : undefined} expanded={sidebarExpanded} />)}
+            {NAV_ITEMS.map((item) => <NavButton key={item.label} {...item} active={activeSection === item.label} onClick={item.label === "График" || item.label === "Сотрудники" ? () => { resetTransientView(); setEmployeeMonthId(null); setStaffProfileId(null); setActiveSection(item.label as "График" | "Сотрудники"); } : undefined} expanded={sidebarExpanded} />)}
           </nav>
           <div className="sidebar-bottom">
             <NavButton label="Настройки" icon={Settings2} expanded={sidebarExpanded} />
@@ -2069,32 +2190,34 @@ export default function Home() {
         </aside>
 
         <main className="main-area">
-          <header className="topbar">
-            <div className="topbar-heading"><h1>{activeSection === "Сотрудники" ? "Сотрудники" : "График работы"}</h1></div>
+          <header className={cn("topbar", employeeMonthId && "employee-month-topbar", currentLifecycle === "completed" && "archive-month-topbar")}>
+            <div className="topbar-heading"><h1>{employeeMonthId ? "Месяц сотрудника" : activeSection === "Сотрудники" ? "Сотрудники" : "График работы"}</h1></div>
             <div className="topbar-actions">
-              {activeSection === "График" && (scheduleStatus === "draft" ? <>
+              {activeSection === "График" && !scheduleReadOnly && (scheduleStatus === "draft" ? <>
                 <Button variant="outline" className="cancel-draft-button" onClick={() => setCancelDraftConfirmOpen(true)}>Отменить создание</Button>
                 <Button className="publish-draft-button" onClick={publishDraft}><LockKeyhole />Закрепить план</Button>
               </> : <Button variant="outline" className="new-month-button" onClick={openNewMonthDialog}><Plus />Создать месяц</Button>)}
-              <Button variant="outline" size="icon" onClick={() => previousMonthKey && openStoredMonth(previousMonthKey)} disabled={!previousMonthKey} aria-label="Предыдущий сохранённый месяц"><ChevronLeft /></Button>
+              {activeSection === "График" && <>
+              <Button variant="outline" size="icon" onClick={() => navigationPreviousKey && navigateMonth(navigationPreviousKey)} disabled={!navigationPreviousKey} aria-label="Предыдущий сохранённый месяц"><ChevronLeft /></Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild><button type="button" className="month-button"><CalendarDays />{monthLabel}<small>{monthIsTest ? "Тестовый · " : ""}{lifecycleLabel(currentLifecycle)}</small></button></DropdownMenuTrigger>
                 <DropdownMenuContent align="center" className="month-menu-content">
                   <DropdownMenuLabel>Сохранённые графики</DropdownMenuLabel>
                   <DropdownMenuSeparator />
-                  {storedMonthKeys.map((key) => {
+                  {navigationMonthKeys.map((key) => {
                     const value = parseMonthKey(key)!;
-                    const storedStatus = monthStore.months[key].status === "draft" ? "draft" : "published";
+                    const storedStatus = profileRecords[key].status === "draft" ? "draft" : "published";
                     const status = lifecycleStatus(storedStatus, periodForMonth(value.year, value.month));
-                    return <DropdownMenuItem key={key} disabled={key === selectedMonthKey} onSelect={() => openStoredMonth(key)}><span className="month-menu-item"><strong>{formatMonthLabel(value.year, value.month)}</strong><small>{monthStore.months[key].isTest ? "Тестовый · " : ""}{lifecycleLabel(status)}</small></span></DropdownMenuItem>;
+                    return <DropdownMenuItem key={key} disabled={key === selectedMonthKey} onSelect={() => navigateMonth(key)}><span className="month-menu-item"><strong>{formatMonthLabel(value.year, value.month)}</strong><small>{profileRecords[key].isTest ? "Тестовый · " : ""}{lifecycleLabel(status)}</small></span></DropdownMenuItem>;
                   })}
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={openNewMonthDialog}><Plus />Создать новый месяц</DropdownMenuItem>
+                  {!employeeMonthId && <DropdownMenuItem onSelect={openNewMonthDialog}><Plus />Создать новый месяц</DropdownMenuItem>}
                 </DropdownMenuContent>
               </DropdownMenu>
-              <Button variant="outline" size="icon" onClick={() => nextMonthKey && openStoredMonth(nextMonthKey)} disabled={!nextMonthKey} aria-label="Следующий сохранённый месяц"><ChevronRight /></Button>
-              {scheduleStatus === "published" && <Button variant="outline" className="reset-schedule-button" onClick={() => setResetConfirmOpen(true)} disabled={!hasAppliedChanges} title={hasAppliedChanges ? "Отменить все применённые перестановки" : "График уже соответствует исходному"}><RotateCcw /><span>Вернуть исходный</span></Button>}
+              <Button variant="outline" size="icon" onClick={() => navigationNextKey && navigateMonth(navigationNextKey)} disabled={!navigationNextKey} aria-label="Следующий сохранённый месяц"><ChevronRight /></Button>
+              {scheduleStatus === "published" && !scheduleReadOnly && <Button variant="outline" className="reset-schedule-button" onClick={() => setResetConfirmOpen(true)} disabled={!hasAppliedChanges} title={hasAppliedChanges ? "Отменить все применённые перестановки" : "График уже соответствует исходному"}><RotateCcw /><span>Вернуть исходный</span></Button>}
               <Button className="export-button" onClick={exportExcel} disabled={exporting || scheduleStatus === "draft" || activeSection !== "График"}><Download />{exporting ? "Готовим Excel…" : "Скачать Excel"}</Button>
+              </>}
               {isSupabaseConfigured() ? <DropdownMenu>
                 <DropdownMenuTrigger asChild><button type="button" className="profile-button" aria-label="Действия пользователя">А</button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
@@ -2107,19 +2230,21 @@ export default function Home() {
           </header>
 
           <div className="content-area">
-            {activeSection === "Сотрудники" ? <EmployeesPanel employees={employees} memberIds={employeeIds} monthLabel={monthLabel} onSave={saveEmployee} onArchive={archiveStaff} onDelete={deleteTestEmployee} onMembership={openMembership} isUsed={isEmployeeUsed} /> : <>
+            {activeSection === "Сотрудники" ? staffProfile ? <EmployeeProfile key={staffProfile.id} employee={staffProfile} months={employeeMonths(staffProfile.id)} currentMonthLabel={formatMonthLabel(calendarYear, calendarMonth)} onBack={() => setStaffProfileId(null)} onOpenMonth={(key) => openEmployeeMonth(staffProfile.id, key)} onEdit={() => { setEmployeeEditorId(staffProfile.id); setStaffProfileId(null); }} overview={profileCurrent?.employeeIds.includes(staffProfile.id) ? <>{renderEmployeeMonthStats(staffProfile.id, profileCurrent.schedule, periodForMonth(calendarYear, calendarMonth), profileCurrent.employeeRates[staffProfile.id] ?? (profileCurrent.status === "draft" ? staffProfile.hourlyRate : undefined), formatMonthLabel(calendarYear, calendarMonth))}<Button variant="outline" onClick={() => openEmployeeMonth(staffProfile.id, calendarKey)}>Открыть график месяца</Button></> : <p className="staff-empty">Сотрудник не включён в график текущего месяца</p>} /> : <EmployeesPanel employees={employees} memberIds={employeeIds} monthLabel={monthLabel} onSave={saveEmployee} onArchive={archiveStaff} onDelete={deleteTestEmployee} onMembership={openMembership} membershipReadOnly={scheduleReadOnly} isUsed={isEmployeeUsed} onOpen={setStaffProfileId} initialEditId={employeeEditorId} onEditConsumed={() => setEmployeeEditorId(null)} /> : <>
+            {employeeMonthId && <div className="employee-month-banner"><Button variant="ghost" onClick={backToEmployeeProfile}><ChevronLeft />Карточка сотрудника</Button><strong>{employeeNameById[employeeMonthId]}</strong><span>{currentLifecycle === "completed" ? "Просмотр истории" : "Просмотр месяца"}</span></div>}
+            {employeeMonthId && renderEmployeeMonthStats(employeeMonthId, displaySchedule, period, monthEmployeeRates[employeeMonthId] ?? (scheduleStatus === "draft" ? employees.find((employee) => employee.id === employeeMonthId)?.hourlyRate : undefined), monthLabel)}
             <section className="schedule-card" aria-labelledby="schedule-title">
               <div className="schedule-toolbar">
-                <div><h2 id="schedule-title">{scheduleStatus === "draft" ? "Черновик исходного графика" : "Расписание"}</h2><p>{scheduleStatus === "draft" ? draftMode === "manual" ? "Ручной режим · назначайте смены в любом порядке" : "Нажмите на свободный сегмент в строке сотрудника, чтобы назначить смену" : "Дневная смена 08:00–20:00 · ночная смена 20:00–08:00"}</p></div>
+                <div><h2 id="schedule-title">{scheduleStatus === "draft" ? "Черновик исходного графика" : "Расписание"}</h2><p>{scheduleStatus === "draft" ? draftMode === "manual" ? "Ручной режим" : "Заполнение по образцу" : "Дневная смена 08:00–20:00 · ночная смена 20:00–08:00"}</p></div>
                 <div className="toolbar-right">
                   {focusPerson && <button className="focus-chip" onClick={() => setFocusPerson(null)}>Показан {employeeNameById[focusPerson!]}<span>Сбросить</span></button>}
                   <div className="legend" aria-label="Обозначения смен"><span><Sun />День</span><span><Moon />Ночь</span></div>
                 </div>
               </div>
 
-              {scheduleStatus === "draft" && (
+              {scheduleStatus === "draft" && !scheduleReadOnly && (
                 <div className={cn("draft-progress", draftPublishError && "draft-progress-error")}>
-                  <div><WandSparkles /><span><strong>{draftMode === "manual" || draftGenerationStarted ? `${assignedMonthShifts} из ${monthShifts.length} смен месяца назначено` : `Первые ${assignedGenerationSeedShifts} из ${generationSeedShifts.length} смен заполнены`}</strong><small>{draftMode === "manual" ? "Ваши назначения сохранятся при автоматическом заполнении остальных смен" : !boundaryShiftAssigned ? "Назначьте ночную смену, входящую в первое число месяца" : draftGenerationStarted ? "Продолжение рассчитано — его можно корректировать вручную" : `Заполните 1–${GENERATION_SEED_DAYS} числа, затем продолжите график автоматически`}</small></span></div>
+                  <div><WandSparkles /><span><strong>{draftMode === "manual" || draftGenerationStarted ? `${assignedMonthShifts} из ${monthShifts.length} смен месяца назначено` : `Первые ${assignedGenerationSeedShifts} из ${generationSeedShifts.length} смен заполнены`}</strong></span></div>
                   <div className="draft-progress-actions">
                     {draftPublishError && <p><TriangleAlert />{draftPublishError}</p>}
                     <Button type="button" size="sm" onClick={openGenerator} disabled={draftMode === "manual" ? assignedMonthShifts === monthShifts.length || generating : !generationSeedReady || generating}><WandSparkles />{draftMode === "manual" ? "Заполнить свободные смены" : draftGenerationStarted ? "Пересчитать" : "Рассчитать продолжение"}</Button>
@@ -2148,8 +2273,8 @@ export default function Home() {
                     const isHighlighted = hoveredPerson === person || focusPerson === person;
                     return [
                       <div key={`${person}-name`} className={cn("sticky-name employee-name employee-name-row", isHighlighted && "employee-highlighted", isFocusedOut && "row-muted")} onMouseEnter={() => setHoveredPerson(person)} onMouseLeave={() => setHoveredPerson(null)}>
-                        {scheduleStatus === "draft" && <button type="button" className={cn("employee-lock", lockedEmployeeIds.includes(person) && "employee-lock-active")} onClick={() => setLockedEmployeeIds((current) => current.includes(person) ? current.filter((id) => id !== person) : [...current, person])} title={lockedEmployeeIds.includes(person) ? `Разрешить автоматические назначения для ${employeeNameById[person]}` : `Запретить автоматические назначения для ${employeeNameById[person]}`} aria-label={lockedEmployeeIds.includes(person) ? `Разблокировать ${employeeNameById[person]}` : `Заблокировать ${employeeNameById[person]}`}>{lockedEmployeeIds.includes(person) ? <LockKeyhole /> : <LockOpen />}</button>}
-                        <button type="button" className="employee-name-action" onClick={() => { setSelectedEmployee(person); setEmployeeOpen(true); }}><span className={`employee-avatar avatar-${personIndex % 4 + 1}`}>{personIndex + 1}</span><span>{employeeNameById[person]}</span><ChevronRight className="employee-chevron" /></button>
+                        {scheduleStatus === "draft" && !scheduleReadOnly && <button type="button" className={cn("employee-lock", lockedEmployeeIds.includes(person) && "employee-lock-active")} onClick={() => setLockedEmployeeIds((current) => current.includes(person) ? current.filter((id) => id !== person) : [...current, person])} title={lockedEmployeeIds.includes(person) ? `Разрешить автоматические назначения для ${employeeNameById[person]}` : `Запретить автоматические назначения для ${employeeNameById[person]}`} aria-label={lockedEmployeeIds.includes(person) ? `Разблокировать ${employeeNameById[person]}` : `Заблокировать ${employeeNameById[person]}`}>{lockedEmployeeIds.includes(person) ? <LockKeyhole /> : <LockOpen />}</button>}
+                        <button type="button" className="employee-name-action" aria-label={`Открыть карточку ${employeeNameById[person]}`} onClick={() => openEmployeeSheet(person)}><span className={`employee-avatar avatar-${personIndex % 4 + 1}`}>{personIndex + 1}</span><span className="employee-name-label"><span className="employee-surname">{compactEmployeeName(employeeNameById[person]).surname}</span><span className="employee-initials">{compactEmployeeName(employeeNameById[person]).initials}</span></span><ChevronRight className="employee-chevron" /></button>
                       </div>,
                       ...days.map((day) => {
                         const info = dayInfo(period, day);
@@ -2169,13 +2294,14 @@ export default function Home() {
                     ];
                   })}
 
-                  <button type="button" className="sticky-name add-employee-row" onClick={openMembership}><span className="add-icon"><Plus /></span><span>Состав месяца</span><small>{employeeIds.length}/8</small></button>
+                  <button type="button" className="sticky-name add-employee-row" onClick={openMembership} disabled={scheduleReadOnly}><span className="add-icon"><Plus /></span><span>Состав месяца</span><small>{employeeIds.length}/8</small></button>
                   {days.map((day) => <div key={`add-${day}`} className="add-row-cell" />)}
                 </div>
               </div>
 
             </section>
 
+            {employeeMonthId && renderMonthAbsences(employeeMonthId)}
             <section className="summary-grid" aria-label="Сводка графика">
               <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>{assignedMonthShifts} из {monthShifts.length}</strong><span>смены закрыты</span></div></article>
               <article className="summary-card"><span className="summary-icon cyan"><Clock3 /></span><div><strong>12 часов</strong><span>продолжительность смены</span></div></article>
@@ -2267,7 +2393,7 @@ export default function Home() {
           </SheetContent>
         </Sheet>
 
-        <Sheet open={employeeOpen} onOpenChange={setEmployeeOpen}>
+        <Sheet open={employeeOpen} onOpenChange={closeEmployeeSheet}>
           <SheetContent className="employee-sheet sm:max-w-[430px]">
             {selectedEmployee && selectedStats && <>
               <SheetHeader className="sheet-header-custom"><div className="sheet-avatar"><UserRound /></div><SheetTitle className="text-xl">{employeeNameById[selectedEmployee]}</SheetTitle><SheetDescription>Показатели за {monthGenitive}</SheetDescription></SheetHeader>
@@ -2284,25 +2410,30 @@ export default function Home() {
                 <div className="detail-line"><span>Рабочие часы по плану</span><strong>{selectedStats.planned} часов</strong></div>
                 <div className="detail-line"><span>Отклонение от плана</span><strong>{selectedStats.delta > 0 ? "+" : ""}{selectedStats.delta} часов</strong></div>
                 <div className="detail-line"><span>Пар полных выходных</span><strong>{selectedStats.offPairs}</strong></div>
-                {scheduleStatus === "draft" && draftMode === "manual" && <div className="draft-absence-panel">
-                  <strong>Недоступность для расчёта</strong>
-                  <p>Укажите отдельную смену или весь период. В это время алгоритм не назначит сотрудника.</p>
-                  <label>С <input type="datetime-local" value={absenceStart} onChange={(event) => { setAbsenceStart(event.target.value); setAbsenceError(""); }} /></label>
-                  <label>По <input type="datetime-local" value={absenceEnd} onChange={(event) => { setAbsenceEnd(event.target.value); setAbsenceError(""); }} /></label>
+                {scheduleStatus === "draft" && !scheduleReadOnly && <div className="draft-absence-panel">
+                  <strong>Период недоступности</strong>
+                  <label>Период <select aria-label="Формат периода недоступности" value={absenceMode} onChange={(event) => { setAbsenceMode(event.target.value as "days" | "time"); setAbsenceStart(""); setAbsenceEnd(""); setAbsenceSaved(false); }}><option value="days">Целые дни включительно</option><option value="time">Точное время</option></select></label>
+                  <label>С <input aria-label="Начало недоступности" type={absenceMode === "days" ? "date" : "datetime-local"} value={absenceStart} onChange={(event) => { setAbsenceStart(event.target.value); setAbsenceError(""); setAbsenceSaved(false); }} /></label>
+                  <label>По <input aria-label="Окончание недоступности" type={absenceMode === "days" ? "date" : "datetime-local"} value={absenceEnd} onChange={(event) => { setAbsenceEnd(event.target.value); setAbsenceError(""); setAbsenceSaved(false); }} /></label>
+                  <label>Причина <input value={absenceReason} onChange={(event) => { setAbsenceReason(event.target.value); setAbsenceSaved(false); }} maxLength={200} /></label>
                   {absenceError && <p className="draft-absence-error" role="alert">{absenceError}</p>}
-                  <Button type="button" size="sm" onClick={() => addDraftAbsence(selectedEmployee)}>Добавить период</Button>
-                  {draftAbsences.filter((absence) => absence.employeeId === selectedEmployee).map((absence) => <div className="draft-absence-item" key={`${absence.start.toISOString()}-${absence.end.toISOString()}`}><span>{shortDateTime(absence.start)} — {shortDateTime(absence.end)}</span><button type="button" title="Удалить период" aria-label="Удалить период недоступности" onClick={() => setDraftAbsences((current) => current.filter((item) => item !== absence))}><X /></button></div>)}
+                  {absenceSaved && <p role="status" className="absence-saved">Период сохранён</p>}
+                  <Button type="button" size="sm" onClick={() => addDraftAbsence(selectedEmployee)}>Сохранить период</Button>
                 </div>}
+                <div className="employee-sheet-absences">{activeAbsences.filter((absence) => absence.employeeId === selectedEmployee).map((absence) => <div className="draft-absence-item" key={absence.id ?? `${absence.start.toISOString()}-${absence.end.toISOString()}`}><span>{absenceLabel(absence)}{absence.reason && <small>{absence.reason}</small>}</span>{!scheduleReadOnly && draftAbsences.includes(absence) && <button type="button" aria-label="Удалить период недоступности" onClick={() => removeAbsence(absence)}><X /></button>}</div>)}</div>
                 <div className="action-list">
-                  {scheduleStatus !== "draft" && <button type="button" onClick={() => openEmployeeAbsence(selectedEmployee)}><UserX /><span><strong>Указать недоступность</strong><small>Один день, рабочий блок или период</small></span><ChevronRight /></button>}
-                  <button type="button" onClick={() => { setFocusPerson(selectedEmployee); setEmployeeOpen(false); }}><Eye /><span><strong>Показать только его график</strong><small>Остальные дорожки будут приглушены</small></span><ChevronRight /></button>
-                  <button type="button" className="action-coming-soon" aria-disabled="true" title="Будет позже"><History /><span><strong>История изменений</strong><small>{historyCount ? `Применено изменений: ${historyCount}` : "Изменений пока нет"}</small><em>Будет позже</em></span><ChevronRight /></button>
-                  {scheduleStatus === "draft" && <button type="button" onClick={() => setLockedEmployeeIds((current) => current.includes(selectedEmployee) ? current.filter((id) => id !== selectedEmployee) : [...current, selectedEmployee])}>{lockedEmployeeIds.includes(selectedEmployee) ? <LockKeyhole /> : <LockOpen />}<span><strong>{lockedEmployeeIds.includes(selectedEmployee) ? "Разблокировать для расчёта" : "Заблокировать для расчёта"}</strong><small>Ручные назначения останутся, новые автоматически не появятся</small></span><ChevronRight /></button>}
+                  {scheduleStatus !== "draft" && !scheduleReadOnly && <button type="button" onClick={() => openEmployeeAbsence(selectedEmployee)}><UserX /><span><strong>Указать недоступность</strong></span><ChevronRight /></button>}
+                  <button type="button" onClick={() => { setFocusPerson(selectedEmployee); closeEmployeeSheet(false); }}><Eye /><span><strong>Показать только его график</strong></span><ChevronRight /></button>
+                  <button type="button" onClick={() => { if (absenceStart || absenceEnd || absenceReason) { setPendingAbsenceClose(true); return; } setEmployeeOpen(false); setEmployeeMonthId(null); setStaffProfileId(selectedEmployee); setActiveSection("Сотрудники"); }}><UserRound /><span><strong>Полная карточка сотрудника</strong></span><ChevronRight /></button>
+                  {scheduleStatus === "draft" && !scheduleReadOnly && <button type="button" onClick={() => setLockedEmployeeIds((current) => current.includes(selectedEmployee) ? current.filter((id) => id !== selectedEmployee) : [...current, selectedEmployee])}>{lockedEmployeeIds.includes(selectedEmployee) ? <LockKeyhole /> : <LockOpen />}<span><strong>{lockedEmployeeIds.includes(selectedEmployee) ? "Разблокировать для расчёта" : "Заблокировать для расчёта"}</strong></span><ChevronRight /></button>}
                 </div>
               </div>
             </>}
           </SheetContent>
         </Sheet>
+
+        <AlertDialog open={Boolean(pendingShiftBlock)} onOpenChange={(open) => { if (!open) setPendingShiftBlock(null); }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Снять смену и отметить недоступность?</AlertDialogTitle><AlertDialogDescription>Назначение будет снято. Эта смена станет недоступной для сотрудника.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction onClick={() => pendingShiftBlock && markShiftUnavailable(pendingShiftBlock.employeeId, pendingShiftBlock.shiftId, true)}>Снять и отметить</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+        <AlertDialog open={pendingAbsenceClose} onOpenChange={setPendingAbsenceClose}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Период ещё не сохранён</AlertDialogTitle><AlertDialogDescription>Сохранить введённую недоступность перед закрытием?</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Продолжить ввод</AlertDialogCancel><Button variant="outline" onClick={() => { setAbsenceStart(""); setAbsenceEnd(""); setAbsenceReason(""); setPendingAbsenceClose(false); setEmployeeOpen(false); }}>Не сохранять</Button><Button onClick={() => { setPendingAbsenceClose(false); if (selectedEmployee && addDraftAbsence(selectedEmployee)) setEmployeeOpen(false); }}>Сохранить</Button></AlertDialogFooter></AlertDialogContent></AlertDialog>
 
         <Sheet open={Boolean(selectedChange)} onOpenChange={(open) => {
           if (!open && rollbackConfirmId === null) {
@@ -2323,9 +2454,9 @@ export default function Home() {
                 <div className="change-sheet-list">
                   {selectedChange.changes.map((change) => <div key={change.shiftId}><span>{changeDateLabel(change.shiftId)}</span><strong>{employeeNameById[change.fromEmployeeId]} → {employeeNameById[change.toEmployeeId]}</strong></div>)}
                 </div>
-                {changeEvents.filter((change) => change.id > selectedChange.id).length > 0 && <div className="rollback-warning"><TriangleAlert /><span>При откате также будут отменены все более поздние изменения: {changeEvents.filter((change) => change.id > selectedChange.id).map((change) => `№${change.id}`).join(", ")}.</span></div>}
+                {!scheduleReadOnly && changeEvents.filter((change) => change.id > selectedChange.id).length > 0 && <div className="rollback-warning"><TriangleAlert /><span>При откате также будут отменены все более поздние изменения: {changeEvents.filter((change) => change.id > selectedChange.id).map((change) => `№${change.id}`).join(", ")}.</span></div>}
               </div>
-              <SheetFooter className="sheet-footer-custom"><Button variant="destructive" onClick={() => setRollbackConfirmId(selectedChange.id)}><RotateCcw />Откатить изменение</Button></SheetFooter>
+              {!scheduleReadOnly && <SheetFooter className="sheet-footer-custom"><Button variant="destructive" onClick={() => setRollbackConfirmId(selectedChange.id)}><RotateCcw />Откатить изменение</Button></SheetFooter>}
             </>}
           </SheetContent>
         </Sheet>

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { isEmployeeAvailable, isEmployeeRecord } from "../public/workers/employees.js";
+import { isEmployeeAvailable, isEmployeeRecord, compactEmployeeName, absencePeriod, shiftAbsences } from "../public/workers/employees.js";
 import { generateSchedule } from "../public/workers/generator.js";
 import { validateSchedule } from "../public/workers/validator.js";
 import { periodForMonth, addDays, addHours, dateKey } from "../public/workers/calendar.js";
@@ -16,6 +16,20 @@ assert.equal(isEmployeeRecord(ordinary), true);
 assert.equal(isEmployeeRecord({ ...ordinary, name: " " }), false);
 assert.equal(isEmployeeRecord({ ...ordinary, startDate: "bad-date" }), false);
 assert.equal(isEmployeeRecord({ ...ordinary, endDateTime: "bad-date" }), false);
+
+assert.deepEqual(compactEmployeeName("Алексеев Александр Сергеевич"), { surname: "Алексеев", initials: "А. С." });
+assert.deepEqual(compactEmployeeName("ФИО 1"), { surname: "ФИО 1", initials: "" });
+const inclusive = absencePeriod("2026-10-01", "2026-10-08", "days");
+assert.equal(inclusive.end.toISOString(), "2026-10-09T00:00:00.000Z");
+assert.equal(absencePeriod("2026-10-08", "2026-10-01", "days"), null);
+assert.equal(absencePeriod("", "", "days"), null);
+const exact = absencePeriod("2026-10-02T20:00", "2026-10-03T08:00", "time");
+assert.equal(exact.end.toISOString(), shift.end.toISOString());
+assert.equal(shiftAbsences("ordinary", shift, [{ employeeId: "ordinary", ...inclusive }]).length, 1);
+assert.equal(shiftAbsences("other", shift, [{ employeeId: "ordinary", ...inclusive }]).length, 0);
+assert.equal(shiftAbsences("ordinary", { start: inclusive.end, end: addHours(inclusive.end,12) }, [{ employeeId: "ordinary", ...inclusive }]).length, 0);
+assert.equal(isEmployeeRecord({ ...ordinary, hourlyRate: -1 }), false);
+assert.equal(isEmployeeRecord({ ...ordinary, hourlyRate: 250.5 }), true);
 
 const period = periodForMonth(2026, 10);
 const employees = Array.from({ length: 8 }, (_, index) => ({

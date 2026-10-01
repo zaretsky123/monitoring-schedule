@@ -543,3 +543,82 @@ button { font: inherit; }
 .staff-error { margin: 4px 0; padding: 12px; color: #bd4545; background: #fff3f3; border-radius: 8px; font-size: 13px; }.staff-card > .staff-error { margin: 0 28px 16px; }
 .staff-card ~ * { margin-top: 20px; }
 @media (max-width: 800px) { .staff-heading { align-items: flex-start; flex-direction: column; padding: 20px; }.staff-month { flex-wrap: wrap; padding: 16px 20px; }.staff-filters { padding: 18px 20px; flex-wrap: wrap; }.staff-search { max-width: none; flex-basis: 100%; } }
+
+.employee-name-action { gap: 7px; }
+.employee-name-action > .employee-name-label { display: flex; flex: 1; min-width: 0; gap: 4px; overflow: hidden; }
+.employee-surname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.employee-initials { flex: 0 0 auto; white-space: nowrap; }
+.employee-chevron { flex: 0 0 12px; width: 12px; }
+.shift-action-wrap { display: flex; width: 100%; min-width: 0; align-items: stretch; }
+.shift-context-menu { z-index: 100; min-width: 235px; padding: 6px; border: 1px solid #dce5ef; border-radius: 11px; background: white; box-shadow: 0 10px 30px #26394a26; }
+.shift-context-menu [role="menuitem"] { padding: 10px 12px; border-radius: 6px; color: #33455e; font-size: 13px; cursor: pointer; outline: none; }
+.shift-context-menu [data-highlighted] { background: #edf5fc; }
+.shift-context-menu .shift-context-danger { color: #bd4b54; }
+.empty-shift-slot { width: 100%; min-width: 0; border-radius: 7px; background: transparent; }
+.empty-shift-slot:focus-visible { outline: 2px solid #6d9ec6; outline-offset: 1px; }
+.unavailable-shift-slot,.unavailable-shift-slot:hover { position: relative; color: #63758a; border: 1px solid #b6c3d2; background: repeating-linear-gradient(135deg,#dde4ec 0px,#dde4ec 7px,#e7ecf2 7px,#e7ecf2 14px); cursor: default; }
+.unavailable-shift-slot svg { width: 14px; height: 14px; opacity: .8; }
+.absence-highlighted { outline: 2px solid #597dba; outline-offset: 1px; }
+.draft-absence-panel select { min-width: 0; max-width: 210px; padding: 7px; border: 1px solid #d7e4ef; border-radius: 6px; background: white; color: #35495e; font-size: 12px; }
+.draft-absence-panel .absence-saved { color: #328653; font-weight: 600; }
+.employee-sheet-absences { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.employee-sheet-absences small { display: block; margin-top: 4px; }
+.staff-name-link { color: #24354d; font-weight: 600; text-align: left; cursor: pointer; }
+.staff-name-link:hover { color: #247fc0; }
+.staff-profile-card { background: white; border: 1px solid #e3e9f2; border-radius: 18px; overflow: hidden; }
+.staff-profile-heading { display: flex; justify-content: space-between; gap: 12px; padding: 20px 24px 0; }
+.staff-profile-identity { display: flex; gap: 18px; align-items: center; padding: 28px; }
+.staff-profile-avatar { width: 60px; height: 60px; display: grid; place-items: center; flex: 0 0 60px; border-radius: 18px; color: #437bb2; background: #edf4fc; }
+.staff-profile-avatar svg { width: 28px; height: 28px; }
+.staff-profile-identity h2 { font-size: 23px; font-weight: 700; color: #223450; overflow-wrap: anywhere; margin-bottom: 12px; }
+.staff-profile-tabs { display: flex; gap: 26px; padding: 0 28px; border-bottom: 1px solid #e7edf4; }
+.staff-profile-tabs button { padding: 15px 1px; border-bottom: 3px solid transparent; font-size: 14px; font-weight: 600; color: #8391a5; cursor: pointer; }
+.staff-profile-tabs button[aria-selected="true"] { color: #2878b6; border-bottom-color: #398ac6; }
+.staff-profile-tabs small { margin-left: 6px; padding: 2px 6px; border-radius: 6px; background: #eef3f9; font-size: 11px; }
+.staff-profile-overview,.staff-profile-months { padding: 28px; }
+.staff-profile-info { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px 32px; padding-bottom: 26px; border-bottom: 1px solid #edf1f5; }
+.staff-profile-info span,.staff-profile-info strong { display: block; }
+.staff-profile-info span { color: #8391a5; font-size: 12px; margin-bottom: 7px; }
+.staff-profile-info strong { color: #354966; font-size: 14px; font-weight: 600; }
+.staff-profile-info .staff-profile-id { font-size: 11px; font-weight: 400; overflow-wrap: anywhere; }
+.staff-profile-month-heading { display: flex; gap: 12px; align-items: center; margin: 26px 0 18px; }
+.staff-profile-month-heading h3,.staff-profile-months h3 { color: #354966; font-size: 16px; font-weight: 600; }
+.staff-profile-month-heading > span { color: #7290ac; font-size: 11px; padding: 4px 8px; background: #eef5fb; border-radius: 6px; }
+.staff-profile-months section + section { margin-top: 26px; }
+.staff-month-list { margin-top: 14px; display: flex; flex-direction: column; gap: 9px; }
+.staff-month-list button { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; padding: 16px; border: 1px solid #e4ebf3; border-radius: 10px; cursor: pointer; }
+.staff-month-list button:hover { background: #f6f9fd; border-color: #b8cfE5; }
+.staff-month-list button > svg { width: 19px; color: #7191b4; flex-shrink: 0; }
+.staff-month-list button > span:nth-child(2) { flex: 1; }
+.staff-month-list strong,.staff-month-list small { display: block; }
+.staff-month-list strong { color: #344b68; font-size: 14px; font-weight: 600; }
+.staff-month-list small { color: #8391a5; font-size: 11px; margin-top: 4px; }
+.staff-month-numbers { color: #778ca4; font-size: 12px; white-space: nowrap; }
+.employee-month-topbar { background: #f1f5fa; border-bottom-color: #d6e0ec; }
+.archive-month-topbar .month-button { border-color: #c5d1e0; background: #e9eff7; }
+.employee-month-banner { display: flex; align-items: center; gap: 18px; padding: 14px 18px; margin-bottom: 18px; border: 1px solid #dce6f1; border-radius: 12px; background: #eff4fa; }
+.employee-month-banner strong { color: #334966; font-size: 14px; flex: 1; overflow-wrap: anywhere; }
+.employee-month-banner > span { color: #74849c; font-size: 12px; }
+.employee-month-stats { background: white; border: 1px solid #e3e9f2; border-radius: 14px; padding: 22px; margin-bottom: 20px; }
+.staff-profile-overview .employee-month-stats { padding: 0; border: 0; }
+.employee-month-details { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 26px; }
+.employee-month-details .detail-line { padding: 12px 0; gap: 12px; }
+.employee-month-details strong { white-space: nowrap; }
+.employee-month-absences { background: white; border: 1px solid #e3e9f2; border-radius: 14px; padding: 22px; margin: 20px 0; }
+.employee-month-absences h3 { color: #3b506b; font-size: 15px; font-weight: 600; margin-bottom: 14px; }
+.employee-month-absences > p { color: #8190a5; font-size: 13px; }
+.employee-absence-record { border: 1px solid #e3e9f2; border-radius: 9px; margin-top: 10px; }
+.employee-absence-record button { display: flex; flex-direction: column; gap: 5px; width: 100%; text-align: left; padding: 12px 14px; cursor: pointer; }
+.employee-absence-record strong { color: #536781; font-size: 13px; font-weight: 600; }
+.employee-absence-record span { color: #71839d; font-size: 12px; }
+.employee-absence-record small { color: #95a2b4; font-size: 11px; }
+.employee-absence-selected { background: #edf4fc; border-color: #94b5d9; }
+@media (max-width: 820px) {
+  .employee-month-topbar .topbar-actions > button[aria-label] { display: flex; }
+  .employee-month-banner { flex-wrap: wrap; gap: 10px; }
+  .employee-month-banner strong { min-width: 140px; }
+  .employee-month-details,.staff-profile-info { grid-template-columns: 1fr; }
+  .staff-profile-overview,.staff-profile-months { padding: 20px; }
+  .staff-month-list button { gap: 9px; padding: 12px; flex-wrap: wrap; }
+  .staff-month-numbers { font-size: 11px; }
+}
