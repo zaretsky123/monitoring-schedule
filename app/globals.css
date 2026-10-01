@@ -622,3 +622,7 @@ button { font: inherit; }
   .staff-month-list button { gap: 9px; padding: 12px; flex-wrap: wrap; }
   .staff-month-numbers { font-size: 11px; }
 }
+
+.staff-open-row { cursor: pointer; transition: background .15s ease; }
+.staff-open-row:hover { background: #f4f8fc; }
+.staff-open-row:focus-visible { outline: 2px solid #6b9bc6; outline-offset: -2px; background: #f4f8fc; }
