@@ -95,6 +95,7 @@ import {
 import {
   createOctober2026Schedule,
   createBlankMonthSchedule,
+  clearMonthSchedule,
   createPatternSchedule,
   EMPLOYEES,
 } from "@/lib/schedule/sample";
@@ -834,6 +835,7 @@ export default function Home() {
   const hadLocalStoreRef = useRef(false);
   const [exporting, setExporting] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [clearMonthConfirmOpen, setClearMonthConfirmOpen] = useState(false);
   const [newMonthConfirmOpen, setNewMonthConfirmOpen] = useState(false);
   const [newMonthStep, setNewMonthStep] = useState<"mode" | "employees">("mode");
   const [newDraftMode, setNewDraftMode] = useState<DraftMode>("seed");
@@ -866,6 +868,7 @@ export default function Home() {
   const monthGenitive = formatMonthGenitive(period.year, period.month);
   const currentLifecycle = lifecycleStatus(scheduleStatus, period);
   const scheduleReadOnly = currentLifecycle === "completed" || Boolean(employeeMonthId) || reinforcementEditing;
+  const canClearMonth = !scheduleReadOnly && new Date() < period.end;
   const displaySchedule = previewSchedule ?? generationPreview ?? schedule;
   const contextualSchedule = useMemo(
     () => mergeAdjacentContext(displaySchedule, monthStore.months, selectedMonthKey, period, monthIsTest),
@@ -1168,7 +1171,7 @@ export default function Home() {
   }
 
   useEffect(() => {
-    if (!resetConfirmOpen && !newMonthConfirmOpen && !cancelDraftConfirmOpen && rollbackConfirmId === null) return;
+    if (!resetConfirmOpen && !clearMonthConfirmOpen && !newMonthConfirmOpen && !cancelDraftConfirmOpen && rollbackConfirmId === null) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (rollbackConfirmId !== null) {
@@ -1176,6 +1179,7 @@ export default function Home() {
           event.stopImmediatePropagation();
         }
         setResetConfirmOpen(false);
+        setClearMonthConfirmOpen(false);
         setNewMonthConfirmOpen(false);
         setCancelDraftConfirmOpen(false);
         setRollbackConfirmId(null);
@@ -1183,7 +1187,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", closeOnEscape, { capture: true });
     return () => window.removeEventListener("keydown", closeOnEscape, { capture: true });
-  }, [cancelDraftConfirmOpen, newMonthConfirmOpen, resetConfirmOpen, rollbackConfirmId]);
+  }, [cancelDraftConfirmOpen, clearMonthConfirmOpen, newMonthConfirmOpen, resetConfirmOpen, rollbackConfirmId]);
 
   function openWorkflow(shift: ShiftSelection, nextWorkflow: Exclude<Workflow, null>) {
     if (scheduleReadOnly) return;
@@ -1516,6 +1520,7 @@ export default function Home() {
   }
 
   function resetTransientView() {
+    setClearMonthConfirmOpen(false);
     setReinforcementEditing(false); setReinforcementError("");
     setFocusedAbsence(null);
     setAbsenceStart(""); setAbsenceEnd(""); setAbsenceReason(""); setAbsenceError(""); setAbsenceSaved(false);
@@ -1928,6 +1933,29 @@ export default function Home() {
     setCancelDraftConfirmOpen(false);
   }
 
+  function clearSelectedMonth() {
+    if (!canClearMonth) return;
+    const blank = clearMonthSchedule(schedule, period);
+    if (!blank) return;
+    const cleared = synchronizeCarryIn({ schedule: blank, baselineSchedule: [] }, period,
+      carryInAssignment(monthStore.months, period.year, period.month, monthIsTest)).schedule;
+    const absences = activeAbsences.map((absence) => ({ ...absence }));
+    const record = serializeMonthRecord({ isTest: monthIsTest, schedule: cleared,
+      baselineSchedule: [], changeEvents: [], historyCount: 0, status: "draft",
+      draftMode: "manual", employeeIds, lockedEmployeeIds: [], draftAbsences: absences });
+    resetTransientView();
+    setSchedule(cleared);
+    setBaselineSchedule([]);
+    setScheduleStatus("draft");
+    setDraftMode("manual");
+    setLockedEmployeeIds([]);
+    setDraftAbsences(absences);
+    setChangeEvents([]);
+    setHistoryCount(0);
+    setMonthEmployeeRates({});
+    saveMonthStore({ ...monthStore, months: { ...monthStore.months, [selectedMonthKey]: record } });
+  }
+
   function resetToOriginalSchedule() {
     if (scheduleReadOnly) return;
     setSchedule(baselineSchedule.map((shift) => ({ ...shift })));
@@ -2250,6 +2278,7 @@ export default function Home() {
                     return <DropdownMenuItem key={key} disabled={key === selectedMonthKey} onSelect={() => navigateMonth(key)}><span className="month-menu-item"><strong>{formatMonthLabel(value.year, value.month)}</strong><small>{profileRecords[key].isTest ? "Тестовый · " : ""}{lifecycleLabel(status)}</small></span></DropdownMenuItem>;
                   })}
                   <DropdownMenuSeparator />
+                  {canClearMonth && <DropdownMenuItem onSelect={() => setClearMonthConfirmOpen(true)}><RotateCcw />Очистить месяц</DropdownMenuItem>}
                   {!employeeMonthId && <DropdownMenuItem onSelect={openNewMonthDialog}><Plus />Создать новый месяц</DropdownMenuItem>}
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -2674,6 +2703,20 @@ export default function Home() {
               <div className="reset-dialog-actions cancel-draft-dialog-actions">
                 <Button variant="outline" autoFocus onClick={() => setCancelDraftConfirmOpen(false)}>Продолжить редактирование</Button>
                 <Button variant="destructive" onClick={cancelDraft}>Удалить черновик</Button>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {clearMonthConfirmOpen && canClearMonth && (
+          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setClearMonthConfirmOpen(false)}>
+            <section className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="clear-month-title" aria-describedby="clear-month-description">
+              <span className="reset-dialog-icon"><TriangleAlert /></span>
+              <h2 id="clear-month-title">Очистить {monthGenitive}?</h2>
+              <p id="clear-month-description">Все назначения этого месяца, замочки, усиления и история изменений будут удалены. График вернётся в ручной черновик. Сотрудники, периоды недоступности и переходящая ночная смена из предыдущего месяца сохранятся. Очистку нельзя отменить.</p>
+              <div className="reset-dialog-actions">
+                <Button variant="outline" autoFocus onClick={() => setClearMonthConfirmOpen(false)}>Отмена</Button>
+                <Button variant="destructive" onClick={clearSelectedMonth}>Очистить месяц</Button>
               </div>
             </section>
           </div>

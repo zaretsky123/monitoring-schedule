@@ -68,6 +68,17 @@ export function createBlankOctober2026Schedule(): Shift[] {
   return createBlankMonthSchedule(periodForMonth(2026, 10));
 }
 
+export function clearMonthSchedule(schedule: Shift[], period: Period, now = new Date()): Shift[] | null {
+  if (now >= period.end) return null;
+  // The incoming night belongs to the previous month and must keep both owners.
+  const incoming = schedule.filter((shift) => shift.type === "N" && shift.start < period.start && shift.end > period.start);
+  const blank = createBlankMonthSchedule(period).map((shift) => {
+    const carried = incoming.find((item) => item.id === shift.id);
+    return carried ? { ...carried } : shift;
+  });
+  return [...blank, ...incoming.filter((shift) => shift.slot === 2).map((shift) => ({ ...shift }))];
+}
+
 export function octoberPeriod() {
   return periodForMonth(2026, 10);
 }

@@ -56,6 +56,23 @@ for (const option of result.options) {
 console.log(`Сотрудники: даты начала/увольнения, одинаковые ФИО, тестовый флаг, расчёт с 8 участниками проверены (${((performance.now() - started) / 1000).toFixed(2)} с).`);
 
 const { secondSlot, setReinforcements, shiftSlots } = await import('../public/workers/slots.js');
+const { clearMonthSchedule, createBlankMonthSchedule, createPatternSchedule } = await import('../public/workers/sample.js');
+const november = periodForMonth(2026, 11);
+const oldNovember = createPatternSchedule(november);
+const incomingNight = oldNovember.find((shift) => shift.id === '2026-10-31:N');
+const incomingSecond = { ...secondSlot(incomingNight), employeeId: 'employee-1', plannedEmployeeId: 'employee-1' };
+oldNovember.push(incomingSecond, { ...secondSlot(oldNovember.find((shift) => shift.id === '2026-11-01:D')), employeeId: 'employee-2', plannedEmployeeId: 'employee-2' });
+const beforeClear = JSON.stringify(oldNovember);
+const clearedNovember = clearMonthSchedule(oldNovember, november, new Date('2026-10-06T10:00:00Z'));
+assert.equal(JSON.stringify(oldNovember), beforeClear, 'Clearing does not mutate the previous schedule');
+assert.equal(clearedNovember.length, 62, 'Only 60 November shifts and the two incoming night slots remain');
+assert.ok(clearedNovember.filter((shift) => shift.start >= november.start).every((shift) => !shift.employeeId && !shift.plannedEmployeeId && shift.slot !== 2));
+assert.deepEqual(clearedNovember.find((shift) => shift.id === incomingNight.id), incomingNight, 'Primary incoming night preserved');
+assert.deepEqual(clearedNovember.find((shift) => shift.id === incomingSecond.id), incomingSecond, 'Second incoming night preserved');
+assert.deepEqual(clearMonthSchedule(clearedNovember, november, new Date('2026-11-06T10:00:00Z')), clearedNovember, 'Current month can also be rebuilt');
+assert.equal(clearMonthSchedule(oldNovember, november, november.end), null, 'Completed month is protected at its boundary');
+assert.deepEqual(clearMonthSchedule([], november, new Date('2026-10-06T10:00:00Z')), createBlankMonthSchedule(november), 'No incoming owner is invented');
+console.log('Очистка месяца: снятие обоих назначений и усилений, переходящая ночь, защита завершённых месяцев проверены.');
 const { solveSchedule } = await import('../public/workers/solver.js');
 const { coefficientHoursForEmployee } = await import('../public/workers/coefficients.js');
 const manual = blank.map(s=>({...s}));
