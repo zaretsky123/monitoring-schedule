@@ -14,6 +14,7 @@
     "test:coefficients": "pnpm worker:build && node scripts/test-coefficients.mjs",
     "test:employees": "pnpm worker:build && node scripts/test-employees.mjs",
     "test:recovery": "pnpm worker:build && node scripts/test-recovery.mjs",
+    "test:publication": "pnpm worker:build && node scripts/test-publication.mjs",
     "start": "next start"
   },
   "dependencies": {

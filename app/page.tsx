@@ -100,6 +100,7 @@ import {
   EMPLOYEES,
 } from "@/lib/schedule/sample";
 import { lifecycleLabel, lifecycleStatus } from "@/lib/schedule/month";
+import { publicationSummary, preparePublishedSchedule } from "@/lib/schedule/publication";
 import { coefficientHoursForEmployee, type CoefficientHours } from "@/lib/schedule/coefficients";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
@@ -850,6 +851,7 @@ export default function Home() {
   const [newEmployeeIds, setNewEmployeeIds] = useState<string[]>(EMPLOYEES.map((employee) => employee.id));
   const [cancelDraftConfirmOpen, setCancelDraftConfirmOpen] = useState(false);
   const [draftPublishError, setDraftPublishError] = useState("");
+  const [publishConfirmOpen, setPublishConfirmOpen] = useState(false);
   const [reinforcementEditing, setReinforcementEditing] = useState(false);
   const [reinforcementSelection, setReinforcementSelection] = useState<string[]>([]);
   const [reinforcementError, setReinforcementError] = useState("");
@@ -897,7 +899,11 @@ export default function Home() {
     [changeEvents, draftAbsences],
   );
   const currentValidation = useMemo(
-    () => validateSchedule({ schedule: contextualSchedule, employees: activeEmployees, period, absences: activeAbsences }),
+    () => {
+      const checked = validateSchedule({ schedule: contextualSchedule, employees: activeEmployees, period, absences: activeAbsences });
+      const issues = checked.issues.filter((issue) => issue.code !== "UNCOVERED_SHIFT");
+      return { valid: issues.length === 0, issues };
+    },
     [activeAbsences, activeEmployees, contextualSchedule, period],
   );
 
@@ -933,6 +939,10 @@ export default function Home() {
     calculationAbortRef.current?.abort();
     generationAbortRef.current?.abort();
   }, []);
+
+  useEffect(() => {
+    setDraftPublishError(""); setPublishConfirmOpen(false);
+  }, [schedule, draftAbsences, employeeIds, employees, changeEvents, selectedMonthKey]);
 
   useEffect(() => {
     try {
@@ -1263,7 +1273,7 @@ export default function Home() {
   }
 
   useEffect(() => {
-    if (!resetConfirmOpen && !clearMonthConfirmOpen && !newMonthConfirmOpen && !cancelDraftConfirmOpen && rollbackConfirmId === null && restoreRevision === null) return;
+    if (!resetConfirmOpen && !clearMonthConfirmOpen && !publishConfirmOpen && !newMonthConfirmOpen && !cancelDraftConfirmOpen && rollbackConfirmId === null && restoreRevision === null) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (rollbackConfirmId !== null) {
@@ -1272,6 +1282,7 @@ export default function Home() {
         }
         setResetConfirmOpen(false);
         setClearMonthConfirmOpen(false);
+        setPublishConfirmOpen(false);
         setNewMonthConfirmOpen(false);
         setCancelDraftConfirmOpen(false);
         setRollbackConfirmId(null);
@@ -1280,7 +1291,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", closeOnEscape, { capture: true });
     return () => window.removeEventListener("keydown", closeOnEscape, { capture: true });
-  }, [cancelDraftConfirmOpen, clearMonthConfirmOpen, newMonthConfirmOpen, resetConfirmOpen, rollbackConfirmId, restoreRevision, restoringVersion]);
+  }, [cancelDraftConfirmOpen, clearMonthConfirmOpen, publishConfirmOpen, newMonthConfirmOpen, resetConfirmOpen, rollbackConfirmId, restoreRevision, restoringVersion]);
 
   function openWorkflow(shift: ShiftSelection, nextWorkflow: Exclude<Workflow, null>) {
     if (scheduleReadOnly) return;
@@ -1613,6 +1624,7 @@ export default function Home() {
   }
 
   function resetTransientView() {
+    setPublishConfirmOpen(false);
     setClearMonthConfirmOpen(false);
     setReinforcementEditing(false); setReinforcementError("");
     setFocusedAbsence(null);
@@ -1879,6 +1891,7 @@ export default function Home() {
     if (save) setSchedule((current) => setReinforcements(current, reinforcementSelection, period.start, period.end));
     setReinforcementEditing(false); setReinforcementError(""); setGeneratorOpen(true);
     setGenerationOptions([]); setGenerationPreview(null); setGenerationError("");
+    setDraftPublishError("");
   }
 
   function openGenerator() {
@@ -1964,24 +1977,28 @@ export default function Home() {
     setGenerationPreview(null);
   }
 
-  function publishDraft() {
-    if (scheduleReadOnly) return;
-    const unassigned = schedule.filter((shift) => !shift.employeeId);
-    if (unassigned.length) {
-      setDraftPublishError(`Осталось назначить ${unassigned.length} ${unassigned.length === 1 ? "смену" : "смен"}.`);
+  function publishDraft(confirmed = false) {
+    if (scheduleReadOnly || scheduleStatus !== "draft") return;
+    setDraftPublishError("");
+    const summary = publicationSummary(schedule, period);
+    if (!confirmed && (summary.emptyMonthIds.length || summary.emptyIncomingIds.length || summary.singleReinforcementIds.length)) {
+      setPublishConfirmOpen(true); return;
+    }
+    const validation = validateSchedule({ schedule: mergeAdjacentContext(schedule, monthStore.months, selectedMonthKey, period, monthIsTest), employees: activeEmployees, period, absences: activeAbsences });
+    const issues = validation.issues.filter((issue) => issue.code !== "UNCOVERED_SHIFT");
+    if (issues.length) {
+      setPublishConfirmOpen(false);
+      setDraftPublishError(`Нельзя закрепить график: ${issues[0].message}${issues.length > 1 ? ` (всего нарушений: ${issues.length})` : ""}.`);
       return;
     }
-    const validation = validateSchedule({ schedule: mergeAdjacentContext(schedule, monthStore.months, selectedMonthKey, period, monthIsTest), employees: activeEmployees, period, absences: draftAbsences });
-    if (!validation.valid) {
-      setDraftPublishError(`Нельзя закрепить график: найдено ${validation.issues.length} нарушений обязательных правил.`);
-      return;
-    }
+    if (!protectLocalCopy("Перед закреплением графика")) return;
     setMonthEmployeeRates(Object.fromEntries(activeEmployees.filter((employee) => employee.hourlyRate !== undefined).map((employee) => [employee.id, employee.hourlyRate!])));
-    const published = schedule.map((shift) => ({ ...shift, plannedEmployeeId: shift.employeeId }));
+    const published = preparePublishedSchedule(schedule, period);
     setSchedule(published);
     setBaselineSchedule(published.map((shift) => ({ ...shift })));
     setScheduleStatus("published");
     setDraftPublishError("");
+    setPublishConfirmOpen(false);
   }
 
   function cancelDraft() {
@@ -2278,7 +2295,7 @@ export default function Home() {
 
   const gridStyle = { gridTemplateColumns: `${NAME_WIDTH}px repeat(${dayCount}, ${DAY_WIDTH}px)` };
   const monthShifts = schedule.filter((shift) => shift.start >= period.start && shift.start < period.end);
-  const assignedMonthShifts = monthShifts.filter((shift) => Boolean(shift.employeeId)).length;
+  const publication = publicationSummary(schedule, period);
   const boundaryShiftAssigned = schedule.some((shift) => shift.start < period.start && shift.end > period.start && Boolean(shift.employeeId));
   const generationStart = addDays(period.start, GENERATION_SEED_DAYS);
   const generationSeedShifts = monthShifts.filter((shift) => shift.slot !== 2 && shift.start < generationStart);
@@ -2358,7 +2375,7 @@ export default function Home() {
             <div className="topbar-actions">
               {activeSection === "График" && !scheduleReadOnly && (scheduleStatus === "draft" ? <>
                 <Button variant="outline" className="cancel-draft-button" onClick={() => setCancelDraftConfirmOpen(true)}>Отменить создание</Button>
-                <Button className="publish-draft-button" onClick={publishDraft}><LockKeyhole />Закрепить план</Button>
+                <Button className="publish-draft-button" onClick={() => publishDraft()}><LockKeyhole />Закрепить план</Button>
               </> : <Button variant="outline" className="new-month-button" onClick={openNewMonthDialog}><Plus />Создать месяц</Button>)}
               {activeSection === "График" && !reinforcementEditing && <>
               <Button variant="outline" size="icon" onClick={() => navigationPreviousKey && navigateMonth(navigationPreviousKey)} disabled={!navigationPreviousKey} aria-label="Предыдущий сохранённый месяц"><ChevronLeft /></Button>
@@ -2417,7 +2434,7 @@ export default function Home() {
 
               {scheduleStatus === "draft" && !scheduleReadOnly && (
                 <div className={cn("draft-progress", draftPublishError && "draft-progress-error")}>
-                  <div><WandSparkles /><span><strong>{draftMode === "manual" || draftGenerationStarted ? `${assignedMonthShifts} из ${monthShifts.length} смен месяца назначено` : `Первые ${assignedGenerationSeedShifts} из ${generationSeedShifts.length} смен заполнены`}</strong></span></div>
+                  <div><WandSparkles /><span><strong>{draftMode === "manual" || draftGenerationStarted ? `${publication.coveredMonthCount} из ${publication.monthCount} смен месяца закрыто · ${publication.assignmentCount} назначений` : `Первые ${assignedGenerationSeedShifts} из ${generationSeedShifts.length} смен заполнены`}</strong></span></div>
                   <div className="draft-progress-actions">
                     {draftPublishError && <p><TriangleAlert />{draftPublishError}</p>}
                     <Button type="button" size="sm" onClick={openGenerator} disabled={draftMode === "manual" ? generating : !generationSeedReady || generating}><WandSparkles />{draftMode === "manual" ? "Заполнить свободные смены" : draftGenerationStarted ? "Пересчитать" : "Рассчитать продолжение"}</Button>
@@ -2476,7 +2493,7 @@ export default function Home() {
 
             {employeeMonthId && renderMonthAbsences(employeeMonthId)}
             <section className="summary-grid" aria-label="Сводка графика">
-              <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>{assignedMonthShifts} из {monthShifts.length}</strong><span>назначения заполнены</span></div></article>
+              <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>{publication.coveredMonthCount} из {publication.monthCount}</strong><span>смены закрыты · {publication.assignmentCount} назначений</span></div></article>
               <article className="summary-card"><span className="summary-icon cyan"><Clock3 /></span><div><strong>12 часов</strong><span>продолжительность смены</span></div></article>
               <article className="summary-card"><span className="summary-icon violet"><Users /></span><div><strong>{visiblePeople.length} сотрудника</strong><span>в текущем графике</span></div></article>
               <article className="summary-card"><span className="summary-icon green"><ShieldCheck /></span><div><strong>{currentValidation.valid ? "Без нарушений" : currentValidation.issues.length}</strong><span>обязательные правила</span></div></article>
@@ -2827,6 +2844,22 @@ export default function Home() {
               <h2 id="restore-version-title">Восстановить версию {restoreRevision}?</h2>
               <p id="restore-version-description">Все сотрудники и месяцы будут восстановлены из выбранной копии. Текущая облачная версия останется в истории, а данные этого браузера будут сохранены отдельно. Если график изменился на другом устройстве, восстановление остановится.</p>
               <div className="reset-dialog-actions"><Button variant="outline" autoFocus disabled={restoringVersion} onClick={() => setRestoreRevision(null)}>Отмена</Button><Button variant="destructive" disabled={restoringVersion} onClick={() => void restoreSavedVersion()}>{restoringVersion ? "Восстанавливаем…" : "Восстановить версию"}</Button></div>
+            </section>
+          </div>
+        )}
+
+        {publishConfirmOpen && scheduleStatus === "draft" && !scheduleReadOnly && (
+          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setPublishConfirmOpen(false)}>
+            <section className="reset-dialog publication-dialog" role="alertdialog" aria-modal="true" aria-labelledby="publish-confirm-title" aria-describedby="publish-confirm-description">
+              <span className="reset-dialog-icon"><TriangleAlert /></span>
+              <h2 id="publish-confirm-title">Закрепить график в текущем виде?</h2>
+              <div id="publish-confirm-description">
+                {publication.emptyMonthIds.length > 0 && <p>Полностью незаполненных смен месяца: {publication.emptyMonthIds.length}. {publication.emptyMonthIds.slice(0, 8).map(changeDateLabel).join("; ")}{publication.emptyMonthIds.length > 8 ? "; …" : ""}.</p>}
+                {publication.emptyIncomingIds.length > 0 && <p>Не указан сотрудник на переходящую ночную смену на первое число (00:00–08:00).</p>}
+                {publication.singleReinforcementIds.length > 0 && <p>Смен с незаполненным вторым местом: {publication.singleReinforcementIds.length}. {publication.singleReinforcementIds.slice(0, 8).map(changeDateLabel).join("; ")}{publication.singleReinforcementIds.length > 8 ? "; …" : ""}.</p>}
+                <p>Сохраним все текущие назначения без автоматического добавления сотрудников. Пустые вторые места перестанут считаться обязательными. Можно оставить график черновиком и продолжить заполнение.</p>
+              </div>
+              <div className="reset-dialog-actions"><Button variant="outline" autoFocus onClick={() => setPublishConfirmOpen(false)}>Оставить на доработку</Button><Button onClick={() => publishDraft(true)}>Закрепить как есть</Button></div>
             </section>
           </div>
         )}

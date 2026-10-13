@@ -109,6 +109,8 @@ button { font: inherit; }
 .snapshot-version strong, .snapshot-version small { display: block; font-size: 12px; }
 .snapshot-version small { color: #65748b; margin-top: 3px; }
 .snapshot-version button { font-size: 11px; }
+.publication-dialog { max-height: calc(100dvh - 40px); overflow-y: auto; }
+.publication-dialog #publish-confirm-description p + p { margin-top: 12px; }
 .schedule-preview-active > .main-area .cloud-protection-bar button { pointer-events: auto; }
 .topbar { min-height: 74px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 26px; border-bottom: 1px solid #e0e6ee; background: rgba(255,255,255,.96); }
 .topbar-heading { display: flex; align-items: center; gap: 14px; min-width: 0; }
