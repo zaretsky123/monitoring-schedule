@@ -103,7 +103,8 @@ import { lifecycleLabel, lifecycleStatus } from "@/lib/schedule/month";
 import { coefficientHoursForEmployee, type CoefficientHours } from "@/lib/schedule/coefficients";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
-import { loadScheduleSnapshot, saveScheduleSnapshot, type ScheduleSnapshot } from "@/lib/supabase/schedule-store";
+import { loadScheduleSnapshot, saveScheduleSnapshot, listSnapshotVersions, loadSnapshotVersion, restoreSnapshotVersion, type ScheduleSnapshot, type SnapshotVersion } from "@/lib/supabase/schedule-store";
+import { preserveRecoveryCopy, recoveryCopies, sameSnapshot, readCloudBase, writeCloudBase } from "@/lib/schedule/recovery";
 import { getOrCreateWorkspace } from "@/lib/supabase/workspaces";
 import { countMonthlyFullOffDays, countMonthlyOffPairs, findWorkBlock, validateSchedule } from "@/lib/schedule/validator";
 import type { Absence, Employee, GeneratedScheduleOption, GenerationMode, Period, ScheduleOption, Shift, ShiftChange, StoredScheduleStatus } from "@/lib/schedule/types";
@@ -832,6 +833,13 @@ export default function Home() {
   const cloudRevisionRef = useRef(0);
   const cloudLastSavedRef = useRef("");
   const cloudSaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const cloudSessionRef = useRef(0);
+  const [localBackupError, setLocalBackupError] = useState("");
+  const [browserStorageError, setBrowserStorageError] = useState(false);
+  const [snapshotVersions, setSnapshotVersions] = useState<SnapshotVersion[]>([]);
+  const [versionsError, setVersionsError] = useState("");
+  const [restoreRevision, setRestoreRevision] = useState<number | null>(null);
+  const [restoringVersion, setRestoringVersion] = useState(false);
   const hadLocalStoreRef = useRef(false);
   const [exporting, setExporting] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
@@ -869,6 +877,8 @@ export default function Home() {
   const currentLifecycle = lifecycleStatus(scheduleStatus, period);
   const scheduleReadOnly = currentLifecycle === "completed" || Boolean(employeeMonthId) || reinforcementEditing;
   const canClearMonth = !scheduleReadOnly && new Date() < period.end;
+  const cloudSnapshotMatchesCurrent = useMemo(() => Boolean(cloudLastSavedRef.current)
+    && sameSnapshot(monthStore, JSON.parse(cloudLastSavedRef.current)), [monthStore, cloudStatus]);
   const displaySchedule = previewSchedule ?? generationPreview ?? schedule;
   const contextualSchedule = useMemo(
     () => mergeAdjacentContext(displaySchedule, monthStore.months, selectedMonthKey, period, monthIsTest),
@@ -983,7 +993,9 @@ export default function Home() {
       const next = { ...current, selectedMonthKey, months: { ...current.months, [selectedMonthKey]: persisted } };
       try {
         window.localStorage.setItem(MONTHS_STORAGE_KEY, JSON.stringify(next));
+        setBrowserStorageError(false);
       } catch {
+        setBrowserStorageError(true);
         // График продолжит работать в текущей вкладке, даже если хранилище браузера недоступно.
       }
       return next;
@@ -994,7 +1006,8 @@ export default function Home() {
     if (!storageReady || !Object.hasOwn(monthStore.months, monthStore.selectedMonthKey)) return;
     try {
       window.localStorage.setItem(MONTHS_STORAGE_KEY, JSON.stringify(monthStore));
-    } catch { /* Cloud saving and the current tab remain available. */ }
+      setBrowserStorageError(false);
+    } catch { setBrowserStorageError(true); }
   }, [monthStore, storageReady]);
 
   useEffect(() => {
@@ -1017,7 +1030,8 @@ export default function Home() {
         setAccessStatus("authorized");
         setCloudWorkspaceId(workspace.id);
         setCloudRemote(remote);
-        if (remote && (!hadLocalStoreRef.current || JSON.stringify(remote.payload) === JSON.stringify(monthStore))) {
+        const base = readCloudBase<PersistedMonthStore>(window.localStorage, workspace.id);
+        if (remote && (!hadLocalStoreRef.current || sameSnapshot(remote.payload, monthStore) || base && sameSnapshot(base, monthStore))) {
           loadCloudStore(remote);
         } else {
           setCloudStatus("choose");
@@ -1038,6 +1052,7 @@ export default function Home() {
     if (!client) return;
     const { data: { subscription } } = client.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_OUT") {
+        cloudSessionRef.current += 1;
         setCloudEnabled(false);
         setCloudWorkspaceId("");
         setCloudOpen(false);
@@ -1050,17 +1065,23 @@ export default function Home() {
   useEffect(() => {
     if (!cloudEnabled || !cloudWorkspaceId || !storageReady) return;
     const json = JSON.stringify(monthStore);
-    if (json === cloudLastSavedRef.current) return;
+    if (cloudLastSavedRef.current && sameSnapshot(monthStore, JSON.parse(cloudLastSavedRef.current))) return;
+    const session = cloudSessionRef.current;
     const timer = window.setTimeout(() => {
       setCloudStatus("saving");
       cloudSaveChainRef.current = cloudSaveChainRef.current.then(async () => {
-        if (json === cloudLastSavedRef.current) return;
+        if (session !== cloudSessionRef.current) return;
+        if (cloudLastSavedRef.current && sameSnapshot(JSON.parse(json), JSON.parse(cloudLastSavedRef.current))) return;
         try {
           const revision = await saveScheduleSnapshot(cloudWorkspaceId, JSON.parse(json) as PersistedMonthStore, cloudRevisionRef.current);
+          if (session !== cloudSessionRef.current) return;
           cloudRevisionRef.current = revision;
           cloudLastSavedRef.current = json;
+          try { writeCloudBase(window.localStorage, cloudWorkspaceId, JSON.parse(json)); } catch { setBrowserStorageError(true); }
           setCloudStatus("connected");
         } catch (error) {
+          if (session !== cloudSessionRef.current) return;
+          cloudSessionRef.current += 1;
           setCloudEnabled(false);
           setCloudStatus("conflict");
           setCloudMessage(error instanceof Error ? error.message : "Не удалось сохранить график в облаке");
@@ -1070,12 +1091,48 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [cloudEnabled, cloudWorkspaceId, monthStore, storageReady]);
 
+  useEffect(() => {
+    if (!cloudOpen || !cloudWorkspaceId) return;
+    let cancelled = false;
+    void listSnapshotVersions(cloudWorkspaceId).then((versions) => {
+      if (!cancelled) { setSnapshotVersions(versions); setVersionsError(""); }
+    }).catch(() => { if (!cancelled) setVersionsError("Не удалось загрузить историю сохранений"); });
+    return () => { cancelled = true; };
+  }, [cloudOpen, cloudWorkspaceId, cloudStatus]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured() || accessStatus !== "authorized") return;
+    const warnBeforeLeave = (event: BeforeUnloadEvent) => {
+      if (browserStorageError || !cloudEnabled || !cloudSnapshotMatchesCurrent) {
+        event.preventDefault(); event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", warnBeforeLeave);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeave);
+  }, [accessStatus, browserStorageError, cloudEnabled, cloudSnapshotMatchesCurrent]);
+
+  function protectLocalCopy(reason: string) {
+    try {
+      preserveRecoveryCopy(window.localStorage, { ...monthStore, selectedMonthKey,
+        months: { ...monthStore.months, [selectedMonthKey]: currentPersistedRecord() } }, reason);
+      setLocalBackupError(""); return true;
+    } catch {
+      setLocalBackupError("Не удалось создать резервную копию в браузере. Действие отменено. Скачайте копию данных перед продолжением.");
+      return false;
+    }
+  }
+
   function loadCloudStore(remote: ScheduleSnapshot<PersistedMonthStore>) {
     if (!isValidMonthStore(remote.payload)) {
+      cloudSessionRef.current += 1;
+      setCloudEnabled(false);
       setCloudMessage("Данные облачного графика повреждены. Локальная копия не затронута.");
       setCloudStatus("error");
       return;
     }
+    if (hadLocalStoreRef.current && !sameSnapshot(remote.payload, monthStore)
+      && !protectLocalCopy("Перед открытием облачной версии")) return;
+    cloudSessionRef.current += 1;
     const nextKey = remote.payload.selectedMonthKey;
     const month = parseMonthKey(nextKey)!;
     const nextPeriod = periodForMonth(month.year, month.month);
@@ -1100,6 +1157,7 @@ export default function Home() {
     setMonthStore(remote.payload);
     cloudRevisionRef.current = remote.revision;
     cloudLastSavedRef.current = JSON.stringify(remote.payload);
+    try { writeCloudBase(window.localStorage, cloudWorkspaceId, remote.payload); } catch { setBrowserStorageError(true); }
     setCloudEnabled(true);
     setCloudStatus("connected");
   }
@@ -1116,6 +1174,7 @@ export default function Home() {
       const revision = await saveScheduleSnapshot(cloudWorkspaceId, snapshot, 0);
       cloudRevisionRef.current = revision;
       cloudLastSavedRef.current = JSON.stringify(snapshot);
+      try { writeCloudBase(window.localStorage, cloudWorkspaceId, snapshot); } catch { setBrowserStorageError(true); }
       setCloudRemote({ payload: snapshot, revision });
       setCloudEnabled(true);
       setCloudStatus("connected");
@@ -1146,6 +1205,7 @@ export default function Home() {
   }
 
   async function signOutCloud() {
+    cloudSessionRef.current += 1;
     setCloudEnabled(false);
     await getSupabaseBrowserClient()?.auth.signOut();
     setCloudWorkspaceId("");
@@ -1162,7 +1222,11 @@ export default function Home() {
       selectedMonthKey,
       months: { ...monthStore.months, [selectedMonthKey]: currentPersistedRecord() },
     };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" }));
+    let copies: unknown = [];
+    try { copies = recoveryCopies(window.localStorage); } catch {
+      try { copies = window.localStorage.getItem("monitoring-schedule:recovery:v1"); } catch { copies = []; }
+    }
+    const url = URL.createObjectURL(new Blob([JSON.stringify({ ...snapshot, _recoveryCopies: copies }, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
     link.download = `monitoring-schedule-backup-${selectedMonthKey}.json`;
@@ -1170,8 +1234,36 @@ export default function Home() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  async function downloadSavedVersion(revision: number) {
+    try {
+      const version = await loadSnapshotVersion<PersistedMonthStore>(cloudWorkspaceId, revision);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(version.payload, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a"); link.href = url; link.download = `monitoring-schedule-version-${revision}.json`; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch { setVersionsError("Не удалось скачать выбранную версию"); }
+  }
+
+  async function restoreSavedVersion() {
+    if (restoreRevision === null || restoringVersion || !cloudEnabled || cloudStatus !== "connected"
+      || !cloudSnapshotMatchesCurrent) return;
+    if (!protectLocalCopy("Перед восстановлением сохранённой версии")) return;
+    setRestoringVersion(true); setVersionsError("");
+    cloudSessionRef.current += 1; setCloudEnabled(false);
+    try {
+      await cloudSaveChainRef.current;
+      const source = await loadSnapshotVersion<PersistedMonthStore>(cloudWorkspaceId, restoreRevision);
+      if (!isValidMonthStore(source.payload)) throw new Error("Формат резервной версии не поддерживается");
+      await restoreSnapshotVersion(cloudWorkspaceId, restoreRevision, cloudRevisionRef.current);
+      const remote = await loadScheduleSnapshot<PersistedMonthStore>(cloudWorkspaceId);
+      if (!remote) throw new Error("Восстановленная версия недоступна");
+      loadCloudStore(remote); setRestoreRevision(null);
+    } catch {
+      setCloudStatus("conflict"); setVersionsError("Восстановление не завершено. Локальная копия сохранена. Проверьте актуальную облачную версию.");
+    } finally { setRestoringVersion(false); setRestoreRevision(null); setCloudOpen(true); }
+  }
+
   useEffect(() => {
-    if (!resetConfirmOpen && !clearMonthConfirmOpen && !newMonthConfirmOpen && !cancelDraftConfirmOpen && rollbackConfirmId === null) return;
+    if (!resetConfirmOpen && !clearMonthConfirmOpen && !newMonthConfirmOpen && !cancelDraftConfirmOpen && rollbackConfirmId === null && restoreRevision === null) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (rollbackConfirmId !== null) {
@@ -1183,11 +1275,12 @@ export default function Home() {
         setNewMonthConfirmOpen(false);
         setCancelDraftConfirmOpen(false);
         setRollbackConfirmId(null);
+        if (!restoringVersion) setRestoreRevision(null);
       }
     };
     window.addEventListener("keydown", closeOnEscape, { capture: true });
     return () => window.removeEventListener("keydown", closeOnEscape, { capture: true });
-  }, [cancelDraftConfirmOpen, clearMonthConfirmOpen, newMonthConfirmOpen, resetConfirmOpen, rollbackConfirmId]);
+  }, [cancelDraftConfirmOpen, clearMonthConfirmOpen, newMonthConfirmOpen, resetConfirmOpen, rollbackConfirmId, restoreRevision, restoringVersion]);
 
   function openWorkflow(shift: ShiftSelection, nextWorkflow: Exclude<Workflow, null>) {
     if (scheduleReadOnly) return;
@@ -1590,6 +1683,7 @@ export default function Home() {
         .some((shift) => shift.employeeId === employee.id || shift.plannedEmployeeId === employee.id);
     if (Object.entries(records).some(([key, record]) => { const month = parseMonthKey(key)!; return hasReference(record) && lifecycleStatus(record.status ?? "published", periodForMonth(month.year, month.month)) === "completed"; })) return "Сотрудник используется в завершённом месяце. Перенесите его в архив.";
     if (Object.values(records).some((record) => !record.isTest && hasReference(record))) return "Удаление остановлено: сотрудник используется в рабочем графике";
+    if (!protectLocalCopy("Перед удалением тестового сотрудника")) return "Удаление отменено: не удалось сохранить резервную копию";
     const clear = (shifts: PersistedSchedule["schedule"]) => shifts.map((shift) => ({ ...shift,
       employeeId: shift.employeeId === employee.id ? "" : shift.employeeId,
       plannedEmployeeId: shift.plannedEmployeeId === employee.id ? "" : shift.plannedEmployeeId,
@@ -1892,6 +1986,7 @@ export default function Home() {
 
   function cancelDraft() {
     if (scheduleReadOnly) return;
+    if (!protectLocalCopy("Перед удалением черновика")) return;
     if (baselineSchedule.length) {
       setSchedule(baselineSchedule.map((shift) => ({ ...shift })));
       setScheduleStatus("published");
@@ -1937,6 +2032,7 @@ export default function Home() {
     if (!canClearMonth) return;
     const blank = clearMonthSchedule(schedule, period);
     if (!blank) return;
+    if (!protectLocalCopy("Перед очисткой месяца")) return;
     const cleared = synchronizeCarryIn({ schedule: blank, baselineSchedule: [] }, period,
       carryInAssignment(monthStore.months, period.year, period.month, monthIsTest)).schedule;
     const absences = activeAbsences.map((absence) => ({ ...absence }));
@@ -2289,6 +2385,7 @@ export default function Home() {
               {isSupabaseConfigured() ? <DropdownMenu>
                 <DropdownMenuTrigger asChild><button type="button" className="profile-button" aria-label="Действия пользователя">А</button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={downloadLocalBackup}><Download />Скачать копию этого браузера</DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => setCloudOpen(true)}><Cloud />Сохранение графиков</DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={() => void signOutCloud()}>Выйти</DropdownMenuItem>
@@ -2296,6 +2393,13 @@ export default function Home() {
               </DropdownMenu> : <button type="button" className="profile-button coming-icon-button" aria-disabled="true" aria-label="Профиль пользователя — будет позже" title="Будет позже">А</button>}
             </div>
           </header>
+
+          {isSupabaseConfigured() && <div className={cn("cloud-protection-bar", (cloudStatus === "choose" || cloudStatus === "conflict" || cloudStatus === "error" || localBackupError || browserStorageError) && "cloud-protection-warning")} role={cloudStatus === "choose" || cloudStatus === "conflict" || localBackupError || browserStorageError ? "alert" : "status"}>
+            <Cloud /><div><strong>{localBackupError ? "Резервная копия не создана" : browserStorageError ? "Локальное сохранение недоступно" : cloudStatus === "choose" ? "Облачное сохранение не подключено" : cloudStatus === "conflict" || cloudStatus === "error" ? "Сохранение в БД остановлено" : cloudStatus === "saving" || cloudEnabled && !cloudSnapshotMatchesCurrent ? "Сохраняем изменения…" : cloudStatus === "connected" ? "Сохранено в БД" : "Проверяем сохранение…"}</strong>
+            {(localBackupError || browserStorageError || cloudStatus === "choose" || cloudStatus === "conflict" || cloudStatus === "error") && <p>{localBackupError || (browserStorageError ? "Браузер не сохраняет локальную копию. Скачайте данные текущей вкладки перед её закрытием." : "Текущие изменения остаются в этом браузере. Скачайте копию перед переходом на другую версию или устройство.")}</p>}</div>
+            <Button variant="outline" onClick={downloadLocalBackup}><Download />Скачать копию</Button>
+            <Button variant="outline" onClick={() => setCloudOpen(true)}>Сохранение и восстановление</Button>
+          </div>}
 
           <div className="content-area">
             {activeSection === "Сотрудники" ? staffProfile ? <EmployeeProfile key={staffProfile.id} employee={staffProfile} months={employeeMonths(staffProfile.id)} currentMonthLabel={formatMonthLabel(calendarYear, calendarMonth)} onBack={() => setStaffProfileId(null)} onOpenMonth={(key) => openEmployeeMonth(staffProfile.id, key)} onEdit={() => { setEmployeeEditorId(staffProfile.id); setStaffProfileId(null); }} overview={profileCurrent?.employeeIds.includes(staffProfile.id) ? <>{renderEmployeeMonthStats(staffProfile.id, profileCurrent.schedule, periodForMonth(calendarYear, calendarMonth), profileCurrent.employeeRates[staffProfile.id] ?? (profileCurrent.status === "draft" ? staffProfile.hourlyRate : undefined), formatMonthLabel(calendarYear, calendarMonth))}<Button variant="outline" onClick={() => openEmployeeMonth(staffProfile.id, calendarKey)}>Открыть график месяца</Button></> : <p className="staff-empty">Сотрудник не включён в график текущего месяца</p>} /> : <EmployeesPanel employees={employees} memberIds={employeeIds} monthLabel={monthLabel} onSave={saveEmployee} onArchive={archiveStaff} onDelete={deleteTestEmployee} onMembership={openMembership} membershipReadOnly={scheduleReadOnly} isUsed={isEmployeeUsed} onOpen={setStaffProfileId} initialEditId={employeeEditorId} onEditConsumed={() => setEmployeeEditorId(null)} /> : <>
@@ -2454,11 +2558,19 @@ export default function Home() {
           <SheetContent className="employee-sheet sm:max-w-[430px]">
             <SheetHeader className="sheet-header-custom"><div className="sheet-avatar"><Cloud /></div><SheetTitle className="text-xl">Сохранение графиков</SheetTitle><SheetDescription>Доступ к графикам только после входа</SheetDescription></SheetHeader>
             <div className="sheet-body cloud-sheet-body">
+              <div className="cloud-choice"><Button variant="outline" onClick={downloadLocalBackup}><Download />Скачать копию этого браузера</Button><small>Все сотрудники, месяцы, черновики и доступные локальные резервные копии.</small></div>
               {cloudStatus === "checking" && <p>Проверяем подключение…</p>}
               {cloudStatus === "choose" && (cloudRemote ? <div className="cloud-choice"><p>В облаке уже есть графики. Скачайте копию данных этого браузера перед открытием облачной версии.</p><Button variant="outline" onClick={downloadLocalBackup}>Скачать локальную копию</Button><Button onClick={() => loadCloudStore(cloudRemote)}>Открыть графики из облака</Button></div> : <div className="cloud-choice"><p>В облаке пока нет графиков. Перенесём все месяцы, исходные планы и историю изменений из этого браузера.</p><Button onClick={importLocalStore}>Перенести мои графики</Button></div>)}
               {(cloudStatus === "connected" || cloudStatus === "saving") && <div className="cloud-choice"><p>{cloudStatus === "saving" ? "Сохраняем изменения…" : "Графики сохраняются автоматически после изменений."}</p><small>Локальная копия также остаётся в браузере.</small></div>}
               {cloudStatus === "conflict" && <div className="cloud-choice"><p>Автоматическое сохранение остановлено. Облачный график мог измениться в другой вкладке. Текущие правки остались в этом браузере.</p><Button variant="outline" onClick={async () => { try { const remote = await loadScheduleSnapshot<PersistedMonthStore>(cloudWorkspaceId); setCloudRemote(remote); setCloudStatus("choose"); setCloudMessage(""); } catch (error) { setCloudMessage(error instanceof Error ? error.message : "Не удалось загрузить данные"); } }}>Проверить облачную версию</Button></div>}
               {cloudMessage && <p className="cloud-message" role="status">{cloudMessage}</p>}
+              <section className="snapshot-history"><h3>История сохранений в БД</h3><p>Каждая сохранённая версия хранится отдельно. Восстановление затрагивает всех сотрудников и все месяцы; текущая версия остаётся в истории.</p>
+                {versionsError && <p role="alert" className="cloud-message">{versionsError}</p>}
+                {snapshotVersions.map((version) => <div className="snapshot-version" key={version.revision}><div><strong>Версия {version.revision}{version.revision === cloudRevisionRef.current && " · текущая"}</strong><small>{new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow" }).format(new Date(version.saved_at))}</small></div>
+                  <Button variant="outline" size="sm" onClick={() => void downloadSavedVersion(version.revision)}>Скачать</Button>
+                  <Button variant="outline" size="sm" disabled={restoringVersion || version.revision === cloudRevisionRef.current || !cloudEnabled || cloudStatus !== "connected" || !cloudSnapshotMatchesCurrent} onClick={() => { setCloudOpen(false); setRestoreRevision(version.revision); }}>Восстановить</Button></div>)}
+                {!snapshotVersions.length && !versionsError && <small>Загружаем сохранённые версии…</small>}
+              </section>
             </div>
           </SheetContent>
         </Sheet>
@@ -2708,12 +2820,23 @@ export default function Home() {
           </div>
         )}
 
+        {restoreRevision !== null && (
+          <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !restoringVersion && setRestoreRevision(null)}>
+            <section className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="restore-version-title" aria-describedby="restore-version-description">
+              <span className="reset-dialog-icon"><History /></span>
+              <h2 id="restore-version-title">Восстановить версию {restoreRevision}?</h2>
+              <p id="restore-version-description">Все сотрудники и месяцы будут восстановлены из выбранной копии. Текущая облачная версия останется в истории, а данные этого браузера будут сохранены отдельно. Если график изменился на другом устройстве, восстановление остановится.</p>
+              <div className="reset-dialog-actions"><Button variant="outline" autoFocus disabled={restoringVersion} onClick={() => setRestoreRevision(null)}>Отмена</Button><Button variant="destructive" disabled={restoringVersion} onClick={() => void restoreSavedVersion()}>{restoringVersion ? "Восстанавливаем…" : "Восстановить версию"}</Button></div>
+            </section>
+          </div>
+        )}
+
         {clearMonthConfirmOpen && canClearMonth && (
           <div className="reset-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setClearMonthConfirmOpen(false)}>
             <section className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="clear-month-title" aria-describedby="clear-month-description">
               <span className="reset-dialog-icon"><TriangleAlert /></span>
               <h2 id="clear-month-title">Очистить {monthGenitive}?</h2>
-              <p id="clear-month-description">Все назначения этого месяца, замочки, усиления и история изменений будут удалены. График вернётся в ручной черновик. Сотрудники, периоды недоступности и переходящая ночная смена из предыдущего месяца сохранятся. Очистку нельзя отменить.</p>
+              <p id="clear-month-description">Все назначения этого месяца, замочки, усиления и история изменений будут удалены. График вернётся в ручной черновик. Сотрудники, периоды недоступности и переходящая ночная смена из предыдущего месяца сохранятся. Перед очисткой будет создана резервная копия.</p>
               <div className="reset-dialog-actions">
                 <Button variant="outline" autoFocus onClick={() => setClearMonthConfirmOpen(false)}>Отмена</Button>
                 <Button variant="destructive" onClick={clearSelectedMonth}>Очистить месяц</Button>

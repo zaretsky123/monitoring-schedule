@@ -13,6 +13,7 @@
     "test:algorithm": "pnpm worker:build && node scripts/test-schedule.mjs",
     "test:coefficients": "pnpm worker:build && node scripts/test-coefficients.mjs",
     "test:employees": "pnpm worker:build && node scripts/test-employees.mjs",
+    "test:recovery": "pnpm worker:build && node scripts/test-recovery.mjs",
     "start": "next start"
   },
   "dependencies": {

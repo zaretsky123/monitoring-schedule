@@ -1,0 +1,32 @@
+-- Run as database administrator. Uses a temporary test workspace and rolls back all test data.\nbegin;
+do $$ declare owner uuid; begin
+ select owner_id into owner from public.workspaces order by created_at limit 1;
+ perform set_config('request.jwt.claims',jsonb_build_object('sub',owner,'role','authenticated')::text,true);
+end $$;
+set local role authenticated;
+do $$ declare wid uuid; v1 jsonb; v2 jsonb; n bigint; caught boolean;
+begin
+ insert into public.workspaces(owner_id,name) values(auth.uid(),'Temporary protection QA (rolled back)') returning id into wid;
+ v1 := '{"version":1,"selectedMonthKey":"2026-10","months":{"2026-10":{"version":8,"status":"draft","schedule":[],"historyCount":0}}}'::jsonb;
+ v2 := v1 || '{"_qa":"second version"}'::jsonb;
+ n := public.save_schedule_snapshot(wid,v1,0);
+ if n<>1 then raise exception 'Initial save failed'; end if;
+ n := public.save_schedule_snapshot(wid,v2,1);
+ if n<>2 or (select count(*) from public.schedule_snapshot_versions where workspace_id=wid)<>2 then raise exception 'History not atomic'; end if;
+ n := public.restore_schedule_snapshot(wid,1,2);
+ if n<>3 or (select payload from public.schedule_snapshots where workspace_id=wid)<>v1 then raise exception 'Restore failed'; end if;
+ if (select count(*) from public.schedule_snapshot_versions where workspace_id=wid)<>3 then raise exception 'Restore did not preserve replaced version'; end if;
+ caught:=false;
+ begin perform public.save_schedule_snapshot(wid,v2,1); exception when serialization_failure then caught:=true; end;
+ if not caught or (select count(*) from public.schedule_snapshot_versions where workspace_id=wid)<>3 then raise exception 'Stale writer changed history'; end if;
+ caught:=false;
+ begin delete from public.schedule_snapshot_versions where workspace_id=wid; exception when insufficient_privilege then caught:=true; end;
+ if not caught then raise exception 'Client can delete history'; end if;
+ perform set_config('request.jwt.claims',jsonb_build_object('sub',gen_random_uuid(),'role','authenticated')::text,true);
+ if exists(select 1 from public.schedule_snapshot_versions where workspace_id=wid) then raise exception 'History RLS leak'; end if;
+ caught:=false;
+ begin perform public.restore_schedule_snapshot(wid,1,3); exception when insufficient_privilege then caught:=true; end;
+ if not caught then raise exception 'Unauthorized restore allowed'; end if;
+end $$;
+rollback;
+select 'save/archive/restore/stale-writer/immutable-history/RLS passed; test rows rolled back' as result;
