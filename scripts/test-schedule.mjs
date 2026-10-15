@@ -172,8 +172,9 @@ assert.equal(
 );
 
 const withoutExpansion = solveSchedule({ ...request, maxExtraChanges: 0 });
-assert.equal(withoutExpansion.found, false, "Проверочный сценарий должен требовать дополнительную перестановку");
-assert.ok(normalOrder.minimumChangeCount > 1, "Автоматический поиск должен расшириться дальше обязательной замены");
+assert.equal(withoutExpansion.found, true, "Отдых от 48 часов теперь позволяет одиночную замену без дополнительных перестановок");
+assert.equal(normalOrder.minimumChangeCount, 1);
+assert.ok(withoutExpansion.options.some((option) => validateSchedule({ schedule: option.schedule, employees, period, absences: [firstAbsence] }).issues.some((issue) => issue.severity === "warning")), "Компромисс по полным выходным должен быть отмечен предупреждением");
 
 const afterFirst = normalOrder.options[0].schedule.map(({ baseEmployeeId: _baseEmployeeId, ...shift }) => shift);
 const secondAbsence = absenceFor(afterFirst, "2026-10-10:D");

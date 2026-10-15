@@ -33,6 +33,8 @@ import {
 } from "lucide-react";
 
 import { baseShiftId, shiftSlots, secondSlot, setReinforcements } from "@/lib/schedule/slots";
+import { ValidationDetails } from "@/components/validation-details";
+import { groupValidationIssues, validationSummary, countLabel } from "@/lib/schedule/validation-report";
 import { ShiftActions } from "@/components/shift-actions";
 import { EmployeeProfile, type EmployeeMonthEntry } from "@/components/employee-profile";
 import { EmployeesPanel } from "@/components/employees-panel";
@@ -852,6 +854,7 @@ export default function Home() {
   const [cancelDraftConfirmOpen, setCancelDraftConfirmOpen] = useState(false);
   const [draftPublishError, setDraftPublishError] = useState("");
   const [publishConfirmOpen, setPublishConfirmOpen] = useState(false);
+  const [validationDetailsOpen, setValidationDetailsOpen] = useState(false);
   const [reinforcementEditing, setReinforcementEditing] = useState(false);
   const [reinforcementSelection, setReinforcementSelection] = useState<string[]>([]);
   const [reinforcementError, setReinforcementError] = useState("");
@@ -902,10 +905,15 @@ export default function Home() {
     () => {
       const checked = validateSchedule({ schedule: contextualSchedule, employees: activeEmployees, period, absences: activeAbsences });
       const issues = checked.issues.filter((issue) => issue.code !== "UNCOVERED_SHIFT");
-      return { valid: issues.length === 0, issues };
+      return { valid: !issues.some((item) => item.severity !== "warning"), issues };
     },
     [activeAbsences, activeEmployees, contextualSchedule, period],
   );
+
+  const validationGroups = useMemo(() => groupValidationIssues(currentValidation.issues), [currentValidation]);
+  const validationWarnings = validationGroups.filter((group) => group.severity === "warning");
+  const validationErrors = validationGroups.filter((group) => group.severity === "error");
+  const validationLabel = validationSummary(validationGroups);
 
   useEffect(() => {
     const scrollContainer = scheduleScrollRef.current;
@@ -1981,15 +1989,17 @@ export default function Home() {
     if (scheduleReadOnly || scheduleStatus !== "draft") return;
     setDraftPublishError("");
     const summary = publicationSummary(schedule, period);
-    if (!confirmed && (summary.emptyMonthIds.length || summary.emptyIncomingIds.length || summary.singleReinforcementIds.length)) {
-      setPublishConfirmOpen(true); return;
-    }
     const validation = validateSchedule({ schedule: mergeAdjacentContext(schedule, monthStore.months, selectedMonthKey, period, monthIsTest), employees: activeEmployees, period, absences: activeAbsences });
-    const issues = validation.issues.filter((issue) => issue.code !== "UNCOVERED_SHIFT");
-    if (issues.length) {
+    const issues = validation.issues.filter((item) => item.code !== "UNCOVERED_SHIFT");
+    const groups = groupValidationIssues(issues);
+    if (issues.some((item) => item.severity !== "warning")) {
       setPublishConfirmOpen(false);
-      setDraftPublishError(`Нельзя закрепить график: ${issues[0].message}${issues.length > 1 ? ` (всего нарушений: ${issues.length})` : ""}.`);
+      setDraftPublishError(`Нельзя закрепить: ${validationSummary(groups)}. Откройте подробности.`);
+      setValidationDetailsOpen(true);
       return;
+    }
+    if (!confirmed && (groups.length || summary.emptyMonthIds.length || summary.emptyIncomingIds.length || summary.singleReinforcementIds.length)) {
+      setPublishConfirmOpen(true); return;
     }
     if (!protectLocalCopy("Перед закреплением графика")) return;
     setMonthEmployeeRates(Object.fromEntries(activeEmployees.filter((employee) => employee.hourlyRate !== undefined).map((employee) => [employee.id, employee.hourlyRate!])));
@@ -2442,6 +2452,11 @@ export default function Home() {
                 </div>
               )}
 
+              {validationGroups.length > 0 && <div className={cn("validation-banner", validationErrors.length > 0 && "validation-banner-error")} role="status">
+                <TriangleAlert /><div><strong>{validationLabel}</strong><span>{countLabel(currentValidation.issues.length, ["случай", "случая", "случаев"])}</span></div>
+                <Button variant="ghost" size="sm" onClick={() => setValidationDetailsOpen(true)}>Подробнее</Button>
+              </div>}
+
               <div ref={scheduleScrollRef} className="schedule-scroll" tabIndex={0} aria-label={`График за ${monthGenitive}`}>
                 <div className={cn("schedule-grid", changeMarkers.length > 0 && "schedule-grid-with-markers")} style={gridStyle}>
                   {scheduleStatus === "draft" && draftMode === "seed" && <div className="generation-boundary" style={{ left: generationBoundaryLeft }} aria-label={`Граница ручного заполнения после ${GENERATION_SEED_DAYS} числа`}><span>Автозаполнение с {GENERATION_SEED_DAYS + 1} числа</span><i /></div>}
@@ -2496,11 +2511,19 @@ export default function Home() {
               <article className="summary-card"><span className="summary-icon blue"><CheckCircle2 /></span><div><strong>{publication.coveredMonthCount} из {publication.monthCount}</strong><span>смены закрыты · {publication.assignmentCount} назначений</span></div></article>
               <article className="summary-card"><span className="summary-icon cyan"><Clock3 /></span><div><strong>12 часов</strong><span>продолжительность смены</span></div></article>
               <article className="summary-card"><span className="summary-icon violet"><Users /></span><div><strong>{visiblePeople.length} сотрудника</strong><span>в текущем графике</span></div></article>
-              <article className="summary-card"><span className="summary-icon green"><ShieldCheck /></span><div><strong>{currentValidation.valid ? "Без нарушений" : currentValidation.issues.length}</strong><span>обязательные правила</span></div></article>
+              <button type="button" className="summary-card validation-summary-card" onClick={() => setValidationDetailsOpen(true)}><span className="summary-icon green"><ShieldCheck /></span><div><strong>{validationLabel}</strong><span>Проверка правил · Подробнее</span></div></button>
             </section>
             </>}
           </div>
         </main>
+
+        <Sheet open={validationDetailsOpen} onOpenChange={setValidationDetailsOpen}>
+          <SheetContent className="employee-sheet sm:max-w-[620px]">
+            <SheetHeader className="sheet-header-custom"><SheetTitle>Проверка графика</SheetTitle><SheetDescription>{monthLabel} · {validationLabel}</SheetDescription></SheetHeader>
+            <div className="sheet-body">{validationGroups.length ? <ValidationDetails groups={validationGroups} employees={employees} schedule={contextualSchedule} /> : <p>Замечаний к правилам нет.</p>}</div>
+            <SheetFooter className="sheet-footer-custom"><Button variant="outline" onClick={() => setValidationDetailsOpen(false)}>Закрыть</Button></SheetFooter>
+          </SheetContent>
+        </Sheet>
 
         <Sheet open={membershipOpen} onOpenChange={setMembershipOpen}>
           <SheetContent className="employee-sheet sm:max-w-[460px]">
@@ -2538,6 +2561,7 @@ export default function Home() {
                       const selected = option.key === selectedGenerationKey;
                       return <button type="button" key={option.key} className={cn("generation-option", selected && "generation-option-selected")} onClick={() => chooseGenerationOption(option)}>
                         <span className="generation-option-title">Вариант {index + 1}{index === 0 && <em>Рекомендуемый</em>}</span>
+                        {option.metrics.restWarningCount > 0 && <span className="generation-rest-warning">Отдых от 48 ч вместо полных дней · {countLabel(option.metrics.restWarningCount, ["случай", "случая", "случаев"])}</span>}
                         <span className="generation-option-metrics"><span>Разброс нагрузки<strong>{option.metrics.loadSpreadHours} ч</strong></span><span>Совпадение со схемой<strong>{option.metrics.patternTotal ? `${Math.round(option.metrics.patternMatches / option.metrics.patternTotal * 100)}%` : "—"}</strong></span></span>
                       </button>;
                     })}
@@ -2857,9 +2881,10 @@ export default function Home() {
                 {publication.emptyMonthIds.length > 0 && <p>Полностью незаполненных смен месяца: {publication.emptyMonthIds.length}. {publication.emptyMonthIds.slice(0, 8).map(changeDateLabel).join("; ")}{publication.emptyMonthIds.length > 8 ? "; …" : ""}.</p>}
                 {publication.emptyIncomingIds.length > 0 && <p>Не указан сотрудник на переходящую ночную смену на первое число (00:00–08:00).</p>}
                 {publication.singleReinforcementIds.length > 0 && <p>Смен с незаполненным вторым местом: {publication.singleReinforcementIds.length}. {publication.singleReinforcementIds.slice(0, 8).map(changeDateLabel).join("; ")}{publication.singleReinforcementIds.length > 8 ? "; …" : ""}.</p>}
+                {validationWarnings.length > 0 && <><p><strong>{validationSummary(validationWarnings)}</strong></p><ValidationDetails groups={validationWarnings} employees={employees} schedule={contextualSchedule} /></>}
                 <p>Сохраним все текущие назначения без автоматического добавления сотрудников. Пустые вторые места перестанут считаться обязательными. Можно оставить график черновиком и продолжить заполнение.</p>
               </div>
-              <div className="reset-dialog-actions"><Button variant="outline" autoFocus onClick={() => setPublishConfirmOpen(false)}>Оставить на доработку</Button><Button onClick={() => publishDraft(true)}>Закрепить как есть</Button></div>
+              <div className="reset-dialog-actions"><Button variant="outline" autoFocus onClick={() => setPublishConfirmOpen(false)}>Оставить на доработку</Button><Button onClick={() => publishDraft(true)}>{validationWarnings.length ? "Закрепить с предупреждением" : "Закрепить как есть"}</Button></div>
             </section>
           </div>
         )}

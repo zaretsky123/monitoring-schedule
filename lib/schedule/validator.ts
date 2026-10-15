@@ -3,8 +3,8 @@ import type { Absence, Employee, Period, Shift, ValidationIssue } from "./types"
 import { baseShiftId } from "./slots";
 import { isEmployeeAvailable } from "./employees";
 
-function issue(code: string, message: string, details: Record<string, unknown> = {}): ValidationIssue {
-  return { code, message, details };
+function issue(code: string, message: string, details: Record<string, unknown> = {}, severity: "error" | "warning" = "error"): ValidationIssue {
+  return { code, message, details, severity };
 }
 
 function employeeShifts(schedule: Shift[], employeeId: string) {
@@ -70,7 +70,12 @@ function validateEmployeeSequence(shifts: Shift[], employeeId: string) {
     }
     if (blockLength >= 3) {
       const fullDays = fullCalendarDaysBetween(previous.end, current.start);
-      if (fullDays < 2) issues.push(issue("NO_TWO_FULL_DAYS_AFTER_BLOCK", `${employeeId}: после блока из ${blockLength} смен нет двух полных выходных`, { employeeId, previousShiftId: previous.id, currentShiftId: current.id, blockLength, fullDays }));
+      if (fullDays < 2) {
+        const details = { employeeId, previousShiftId: previous.id, currentShiftId: current.id, blockLength, fullDays, restHours, restStart: previous.end.toISOString(), restEnd: current.start.toISOString() };
+        issues.push(restHours >= 48
+          ? issue("REST_48H_INSTEAD_OF_FULL_DAYS", `${employeeId}: отдых ${restHours} ч вместо двух полных календарных дней`, details, "warning")
+          : issue("NO_TWO_FULL_DAYS_AFTER_BLOCK", `${employeeId}: после блока из ${blockLength} смен отдых ${restHours} ч — нужны два полных календарных дня или минимум 48 часов`, details));
+      }
     }
     blockLength = 1;
   }
@@ -142,7 +147,7 @@ export function validateSchedule({ schedule, employees, period, absences = [] }:
   for (const employee of employees) issues.push(...validateEmployeeSequence(employeeShifts(schedule, employee.id), employee.id));
   issues.push(...validateMonthlyPairs(schedule, employees, period));
   issues.push(...validateWeeklyRest(schedule, employees, period));
-  return { valid: issues.length === 0, issues };
+  return { valid: !issues.some((item) => item.severity !== "warning"), issues };
 }
 
 export function describeWorkBlocks(schedule: Shift[], employeeId: string, period: Period) {

@@ -45,6 +45,7 @@ export type Absence = {
 };
 
 export type ValidationIssue = {
+  severity?: "error" | "warning";
   code: string;
   message: string;
   details: Record<string, unknown>;
@@ -87,6 +88,7 @@ export type GeneratedScheduleOption = {
   mode: GenerationMode;
   schedule: Shift[];
   metrics: {
+    restWarningCount: number;
     patternMatches: number;
     patternTotal: number;
     workHours: Record<string, number>;

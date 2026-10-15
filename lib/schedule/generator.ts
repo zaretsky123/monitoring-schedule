@@ -19,7 +19,7 @@ function employeeIndexById(employees: Employee[]) {
   return new Map(employees.map((employee, index) => [employee.id, index]));
 }
 
-function transitionSequence(state: SearchState, employeeIndex: number, shift: Shift) {
+function transitionSequence(state: SearchState, employeeIndex: number, shift: Shift, allowRestWarnings: boolean) {
   const lastEnd = state.lastEnds[employeeIndex];
   let blockLength = state.blockLengths[employeeIndex] || 0;
   if (Number.isFinite(lastEnd)) {
@@ -29,7 +29,7 @@ function transitionSequence(state: SearchState, employeeIndex: number, shift: Sh
       blockLength += 1;
       if (blockLength > 5) return null;
     } else {
-      if (blockLength >= 3 && fullCalendarDaysBetween(new Date(lastEnd), shift.start) < 2) return null;
+      if (blockLength >= 3 && fullCalendarDaysBetween(new Date(lastEnd), shift.start) < 2 && (!allowRestWarnings || restHours < 48)) return null;
       blockLength = 1;
     }
   } else blockLength = 1;
@@ -59,6 +59,7 @@ function optionMetrics(schedule: Shift[], employees: Employee[], period: Period,
   const patternMatches = targetEntries.filter(([shiftId, employeeId]) => schedule.find((shift) => shift.id === shiftId)?.employeeId === employeeId).length;
   const hours = Object.values(workHours);
   return {
+    restWarningCount: validateSchedule({ schedule, employees, period }).issues.filter((item) => item.severity === "warning").length,
     patternMatches,
     patternTotal: targetEntries.length,
     workHours,
@@ -85,7 +86,7 @@ function buildPatternTargets(schedule: Shift[], period: Period, seedDays: number
   return targets;
 }
 
-function seedFailureReason(schedule: Shift[], employees: Employee[], period: Period, seedDays: number) {
+function seedFailureReason(schedule: Shift[], employees: Employee[], period: Period, seedDays: number, allowRestWarnings: boolean) {
   const seedEnd = addDays(period.start, seedDays);
   const seedShifts = schedule
     .filter((shift) => shift.employeeId && shift.start < seedEnd)
@@ -105,7 +106,7 @@ function seedFailureReason(schedule: Shift[], employees: Employee[], period: Per
   for (const shift of seedShifts) {
     const employeeIndex = indexById.get(shift.employeeId);
     if (employeeIndex === undefined) return `В первых восьми днях указана неизвестная запись сотрудника (${shift.id}).`;
-    const nextBlock = transitionSequence(state, employeeIndex, shift);
+    const nextBlock = transitionSequence(state, employeeIndex, shift, allowRestWarnings);
     if (nextBlock === null) return `Первые восемь дней нельзя продолжить: назначение ${shift.id} нарушает отдых или допустимую длину рабочего блока.`;
     state.lastEnds[employeeIndex] = shift.end.getTime();
     state.blockLengths[employeeIndex] = nextBlock;
@@ -113,13 +114,19 @@ function seedFailureReason(schedule: Shift[], employees: Employee[], period: Per
   return "";
 }
 
-export function generateSchedule({
+export function generateSchedule(args: Parameters<typeof generateScheduleAttempt>[0]) {
+  const preferred = generateScheduleAttempt({ ...args, allowRestWarnings: false });
+  return preferred.found ? preferred : generateScheduleAttempt({ ...args, allowRestWarnings: true });
+}
+
+function generateScheduleAttempt({
   schedule,
   employees,
   period,
   seedDays = 8,
   mode,
   manual = false,
+  allowRestWarnings = false,
   lockedEmployeeIds = [],
   absences = [],
   maxOptions = 3,
@@ -131,6 +138,7 @@ export function generateSchedule({
   seedDays?: number;
   mode: GenerationMode;
   manual?: boolean;
+  allowRestWarnings?: boolean;
   lockedEmployeeIds?: string[];
   absences?: Absence[];
   maxOptions?: number;
@@ -138,17 +146,17 @@ export function generateSchedule({
 }) {
   const activeEmployees = employees.filter((employee) => employee.active || employee.endDateTime);
   if (!activeEmployees.length) return { found: false as const, options: [], reason: "Нет активных сотрудников для формирования графика." };
-  if (manual) return generateManualSchedule(schedule, activeEmployees, period, lockedEmployeeIds, absences, maxOptions, beamWidth);
+  if (manual) return generateManualSchedule(schedule, activeEmployees, period, lockedEmployeeIds, absences, maxOptions, beamWidth, "optimal", 8, allowRestWarnings);
   const seedEnd = addDays(period.start, seedDays);
   const requiredSeed = schedule.filter((shift) => shift.slot !== 2 && shift.start >= period.start && shift.start < seedEnd);
   const emptySeed = requiredSeed.filter((shift) => !shift.employeeId);
   if (emptySeed.length) return { found: false as const, options: [], reason: `Сначала заполните первые восемь дней: осталось ${emptySeed.length} смен.` };
   const boundary = schedule.find((shift) => shift.start < period.start && shift.end > period.start);
   if (!boundary?.employeeId) return { found: false as const, options: [], reason: "Сначала назначьте ночную смену, входящую в первое число месяца." };
-  const seedReason = seedFailureReason(schedule, activeEmployees, period, seedDays);
+  const seedReason = seedFailureReason(schedule, activeEmployees, period, seedDays, allowRestWarnings);
   if (seedReason) return { found: false as const, options: [], reason: seedReason };
 
-  if (schedule.some((shift) => shift.slot === 2)) return generateManualSchedule(schedule, activeEmployees, period, lockedEmployeeIds, absences, maxOptions, beamWidth, mode, seedDays);
+  if (schedule.some((shift) => shift.slot === 2)) return generateManualSchedule(schedule, activeEmployees, period, lockedEmployeeIds, absences, maxOptions, beamWidth, mode, seedDays, allowRestWarnings);
 
   const mutable = schedule
     .filter((shift) => shift.start >= seedEnd && shift.start < period.end)
@@ -174,7 +182,7 @@ export function generateSchedule({
   for (const shift of fixedPast) {
     const employeeIndex = indexById.get(shift.employeeId);
     if (employeeIndex === undefined) continue;
-    const nextBlock = transitionSequence(initial, employeeIndex, shift);
+    const nextBlock = transitionSequence(initial, employeeIndex, shift, allowRestWarnings);
     if (nextBlock === null) return { found: false as const, options: [], reason: `Исходный фрагмент нарушает правила около смены ${shift.id}.` };
     initial.lastEnds[employeeIndex] = shift.end.getTime();
     initial.blockLengths[employeeIndex] = nextBlock;
@@ -194,7 +202,7 @@ export function generateSchedule({
         if (lockedEmployeeIds.includes(activeEmployees[employeeIndex].id)) continue;
         if (!isEmployeeAvailable(activeEmployees[employeeIndex], shift)) continue;
         if (absences.some((absence) => absence.employeeId === activeEmployees[employeeIndex].id && shift.start < absence.end && shift.end > absence.start)) continue;
-        const nextBlock = transitionSequence(state, employeeIndex, shift);
+        const nextBlock = transitionSequence(state, employeeIndex, shift, allowRestWarnings);
         if (nextBlock === null) continue;
         const next: SearchState = {
           assignments: [...state.assignments, employeeIndex],
@@ -231,7 +239,7 @@ export function generateSchedule({
     });
     const validationSchedule = candidate.filter((shift) => shift.employeeId || (shift.start >= period.start && shift.start < period.end));
     const validation = validateSchedule({ schedule: validationSchedule, employees: activeEmployees, period, absences });
-    if (!validation.valid) continue;
+    if (!validation.valid || !allowRestWarnings && validation.issues.some((item) => item.severity === "warning")) continue;
     const metrics = optionMetrics(candidate, activeEmployees, period, mode, patternTargets);
     const key = mutable.map((shift) => assignmentById.get(shift.id)).join("|");
     options.push({ key, mode, schedule: candidate, metrics });
@@ -248,7 +256,7 @@ export function generateSchedule({
 }
 
 function generateManualSchedule(
-  schedule: Shift[], employees: Employee[], period: Period, lockedEmployeeIds: string[], absences: Absence[], maxOptions: number, beamWidth: number, mode: GenerationMode = "optimal", seedDays = 8,
+  schedule: Shift[], employees: Employee[], period: Period, lockedEmployeeIds: string[], absences: Absence[], maxOptions: number, beamWidth: number, mode: GenerationMode = "optimal", seedDays = 8, allowRestWarnings = false,
 ) {
   const locked = new Set(lockedEmployeeIds);
   const indexById = employeeIndexById(employees);
@@ -282,10 +290,10 @@ function generateManualSchedule(
         return employeeId ? { ...shift, employeeId, plannedEmployeeId: employeeId } : { ...shift };
       });
       const validation = validateSchedule({ schedule: candidate.filter((shift) => shift.employeeId || (shift.start >= period.start && shift.start < period.end)), employees, period, absences });
-      if (!validation.valid) continue;
+      if (!validation.valid || !allowRestWarnings && validation.issues.some((item) => item.severity === "warning")) continue;
       rotationOptions.push({ key: empty.map((shift) => assignments.get(shift.id)).join("|"), mode: "optimal", schedule: candidate, metrics: optionMetrics(candidate, employees, period, "optimal", new Map()) });
     }
-    rotationOptions.sort((a, b) => a.metrics.loadSpreadHours - b.metrics.loadSpreadHours || a.key.localeCompare(b.key));
+    rotationOptions.sort((a, b) => a.metrics.restWarningCount - b.metrics.restWarningCount || a.metrics.loadSpreadHours - b.metrics.loadSpreadHours || a.key.localeCompare(b.key));
     if (rotationOptions.length) return { found: true as const, recommendedKey: rotationOptions[0].key, options: rotationOptions.slice(0, maxOptions) };
   }
   const earlier = schedule.filter((shift) => shift.employeeId && shift.end <= slots[0].start)
@@ -298,7 +306,7 @@ function generateManualSchedule(
   for (const shift of earlier) {
     const index = indexById.get(shift.employeeId);
     if (index === undefined) continue;
-    const block = transitionSequence(initial, index, shift);
+    const block = transitionSequence(initial, index, shift, allowRestWarnings);
     if (block === null) return { found: false as const, options: [], reason: `Смена ${shift.id} в предыдущем месяце нарушает правила отдыха.` };
     initial.lastEnds[index] = shift.end.getTime();
     initial.blockLengths[index] = block;
@@ -309,7 +317,7 @@ function generateManualSchedule(
     const candidates = shift.employeeId ? [indexById.get(shift.employeeId)!] : employees
       .map((employee, index) => !isEmployeeAvailable(employee, shift) || locked.has(employee.id) || absences.some((absence) => absence.employeeId === employee.id && shift.start < absence.end && shift.end > absence.start) ? -1 : index).filter((index) => index >= 0);
     for (const state of beam) for (const index of candidates) {
-      const block = transitionSequence(state, index, shift);
+      const block = transitionSequence(state, index, shift, allowRestWarnings);
       if (block === null) continue;
       const next: SearchState = {
         assignments: shift.employeeId ? state.assignments : [...state.assignments, index],
@@ -339,7 +347,7 @@ function generateManualSchedule(
       return employeeId ? { ...shift, employeeId, plannedEmployeeId: employeeId } : { ...shift };
     });
     const validation = validateSchedule({ schedule: candidate.filter((shift) => shift.employeeId || (shift.start >= period.start && shift.start < period.end)), employees, period, absences });
-    if (!validation.valid) continue;
+    if (!validation.valid || !allowRestWarnings && validation.issues.some((item) => item.severity === "warning")) continue;
     const key = empty.map((shift) => assignmentById.get(shift.id)).join("|");
     if (options.some((option) => option.key === key)) continue;
     options.push({ key, mode, schedule: candidate, metrics: optionMetrics(candidate, employees, period, mode, patternTargets) });

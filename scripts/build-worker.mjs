@@ -5,6 +5,7 @@ import ts from "typescript";
 const projectRoot = process.cwd();
 const outputDir = path.join(projectRoot, "public", "workers");
 const sources = [
+  ["lib/schedule/validation-report.ts", "validation-report.js"],
   ["lib/schedule/publication.ts", "publication.js"],
   ["lib/schedule/recovery.ts", "recovery.js"],
   ["lib/schedule/sample.ts", "sample.js"],
